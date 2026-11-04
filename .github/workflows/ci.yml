@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: 린트와 타입 검사
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+      - name: 의존성 설치
+        run: uv sync --frozen
+      - name: ruff
+        run: |
+          uv run --frozen ruff check .
+          uv run --frozen ruff format --check .
+      - name: mypy
+        run: uv run --frozen mypy
+
+  test:
+    name: 테스트 ${{ matrix.os }} py${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+      - name: 의존성 설치
+        run: uv sync --frozen --python "${{ matrix.python }}"
+      - name: pytest
+        run: uv run --frozen pytest
+
+  license:
+    name: 의존성 라이선스 검사
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+      - name: 의존성 설치
+        run: uv sync --frozen
+      - name: 라이선스 검사
+        run: uv run --frozen python tools/license_check.py
