@@ -1,6 +1,9 @@
 [project]
 name = "autoetl"
 description = "결정론 분석 엔진과 LLM 하네스로 CSV·엑셀을 분석해 PostgreSQL 스키마와 적재 플랜을 만드는 로컬 ETL 도구"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = []
 dynamic = ["version"]
