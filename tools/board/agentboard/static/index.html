@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>에이전트 게시판</title>
+<style nonce="__NONCE__">
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --line: #e2e5ea; --text: #1d2330; --muted: #5f6b7a;
+  --accent: #2f6fdb; --accent-soft: #e7effc; --warn: #b4690e; --warn-soft: #fbf0df;
+  --bad: #c2352f; --bad-soft: #fbe9e8; --good: #1f7a46; --good-soft: #e3f3e9;
+  --chip: #eef0f3; --shadow: 0 1px 2px rgba(16,24,40,.06);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12151b; --panel: #1a1e26; --line: #2b313c; --text: #e6e9ef; --muted: #9aa4b2;
+    --accent: #6ea0ff; --accent-soft: #1c2a44; --warn: #e3a64e; --warn-soft: #3a2c16;
+    --bad: #f07b74; --bad-soft: #3d1f1d; --good: #5cc98a; --good-soft: #17301f;
+    --chip: #252a33; --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif; }
+button, select, input, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 6px 12px; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.danger { color: var(--bad); }
+button:disabled { opacity: .5; cursor: default; }
+select, input[type=text], textarea { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 6px 8px; width: 100%; }
+textarea { min-height: 72px; resize: vertical; }
+header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line); padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+header h1 { font-size: 17px; margin: 0; }
+.spacer { flex: 1; }
+.counts { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); font-size: 12px; white-space: nowrap; }
+.chip.review { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.chip.warn { background: var(--warn-soft); color: var(--warn); }
+.chip.bad { background: var(--bad-soft); color: var(--bad); }
+.chip.good { background: var(--good-soft); color: var(--good); }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.controls select { width: auto; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; padding: 16px; }
+@media (max-width: 1100px) { main { grid-template-columns: minmax(0, 1fr); } }
+.board { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; align-items: start; }
+@media (max-width: 900px) { .board { grid-template-columns: minmax(0, 1fr); } }
+.column { background: transparent; }
+.column h2 { font-size: 13px; margin: 0 0 8px; display: flex; justify-content: space-between; color: var(--muted); }
+.column.review h2 { color: var(--accent); }
+.cards { display: flex; flex-direction: column; gap: 8px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px; box-shadow: var(--shadow); cursor: pointer; text-align: left; width: 100%; }
+.card:hover, .card:focus-visible { border-color: var(--accent); outline: none; }
+.card.review { border-left: 3px solid var(--accent); }
+.card.blocked { border-left: 3px solid var(--bad); }
+.card .key, .card .title { display: block; }
+.card .key { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
+.card .title { font-weight: 600; margin: 2px 0 6px; overflow-wrap: anywhere; }
+.card .tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.empty { color: var(--muted); font-size: 12px; padding: 8px 2px; }
+aside { display: flex; flex-direction: column; gap: 16px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+.panel h3 { margin: 0 0 8px; font-size: 13px; }
+.list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.list li { overflow-wrap: anywhere; }
+.linklike { background: none; border: 0; padding: 0; color: var(--accent); text-align: left; }
+.overlay { position: fixed; inset: 0; background: rgba(10,14,20,.35); z-index: 20; display: none; }
+.overlay.open { display: block; }
+.drawer { position: fixed; top: 0; right: 0; height: 100%; width: min(560px, 100%); background: var(--panel); border-left: 1px solid var(--line); z-index: 21; transform: translateX(100%); transition: transform .18s ease; display: flex; flex-direction: column; }
+.drawer.open { transform: none; }
+.drawer .head { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: flex-start; }
+.drawer .head h2 { font-size: 17px; margin: 2px 0 0; overflow-wrap: anywhere; }
+.drawer .content { padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
+.meta { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 4px 12px; font-size: 13px; }
+.meta dt { color: var(--muted); }
+.meta dd { margin: 0; overflow-wrap: anywhere; }
+.pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font-size: 13px; }
+.section h3 { font-size: 13px; margin: 0 0 8px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.row > * { flex: 0 0 auto; }
+.row select { width: auto; }
+.row.end { justify-content: flex-end; }
+.grow { flex: 1; min-width: 0; }
+.flush { margin: 0; }
+.timeline { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.timeline li { border-left: 2px solid var(--line); padding-left: 10px; }
+.timeline li.k-review_request, .timeline li.k-review_result { border-color: var(--accent); }
+.timeline li.k-blocker { border-color: var(--bad); }
+.timeline .who { font-size: 12px; color: var(--muted); }
+.timeline .body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+.reviewbox { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); width: min(520px, calc(100% - 32px)); padding: 0; }
+dialog::backdrop { background: rgba(10,14,20,.35); }
+dialog form { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+dialog label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+dialog label.check { flex-direction: row; align-items: center; gap: 8px; }
+.toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--panel); padding: 8px 14px; border-radius: 8px; z-index: 40; display: none; max-width: calc(100% - 32px); }
+.toast.show { display: block; }
+.toast.error { background: var(--bad); color: #fff; }
+</style>
+</head>
+<body>
+<script id="cfg" type="application/json">__CONFIG__</script>
+<header>
+  <h1>에이전트 게시판</h1>
+  <span class="chip" id="owner-chip"></span>
+  <div class="counts" id="counts"></div>
+  <div class="spacer"></div>
+  <div class="controls">
+    <label class="small muted" for="phase-filter">단계</label>
+    <select id="phase-filter"><option value="">전체</option></select>
+    <label class="small"><input type="checkbox" id="show-closed" checked> 완료 표시</label>
+    <button id="new-task" class="primary" type="button">새 과업</button>
+    <span class="small muted" id="updated"></span>
+  </div>
+</header>
+<main>
+  <section class="board" id="board" aria-label="과업 보드"></section>
+  <aside>
+    <div class="panel"><h3>검토 대기</h3><ul class="list" id="review-list"></ul></div>
+    <div class="panel"><h3>에이전트</h3><ul class="list" id="agent-list"></ul></div>
+    <div class="panel"><h3>최근 기록</h3><ul class="list" id="recent-list"></ul></div>
+  </aside>
+</main>
+
+<div class="overlay" id="overlay"></div>
+<section class="drawer" id="drawer" aria-hidden="true" aria-label="과업 상세">
+  <div class="head">
+    <div class="grow"><div class="small muted" id="d-key"></div><h2 id="d-title"></h2></div>
+    <button type="button" id="d-close" aria-label="닫기">닫기</button>
+  </div>
+  <div class="content" id="d-content"></div>
+</section>
+
+<dialog id="new-dialog">
+  <form id="new-form" method="dialog">
+    <h3 class="flush">새 과업</h3>
+    <label>제목<input type="text" name="title" maxlength="200" required></label>
+    <div class="row">
+      <label>단계<input type="text" name="phase" maxlength="20" placeholder="P0"></label>
+      <label>우선순위<select name="priority"><option value="high">높음</option><option value="medium" selected>보통</option><option value="low">낮음</option></select></label>
+    </div>
+    <label>선행 과업 (쉼표로 구분)<input type="text" name="deps" placeholder="T-0001, T-0002"></label>
+    <label>라벨 (쉼표로 구분)<input type="text" name="labels"></label>
+    <label class="check"><input type="checkbox" name="review" checked> 소유자 검토 필요</label>
+    <label>본문<textarea name="body" rows="5"></textarea></label>
+    <div class="row end">
+      <button type="button" id="new-cancel">취소</button>
+      <button type="submit" class="primary">추가</button>
+    </div>
+  </form>
+</dialog>
+<div class="toast" id="toast" role="status"></div>
+
+<script nonce="__NONCE__">
+(() => {
+  'use strict';
+  const CFG = JSON.parse(document.getElementById('cfg').textContent);
+  const STATUS = { backlog: '보류', todo: '할 일', in_progress: '진행 중', blocked: '막힘', review: '검토 대기', done: '완료', cancelled: '취소' };
+  const PRIORITY = { high: '높음', medium: '보통', low: '낮음' };
+  const KIND = { progress: '진행', decision: '결정', question: '질문', blocker: '막힘', handoff: '인계', note: '메모', status: '상태', review_request: '검토 요청', review_result: '검토 결과' };
+  const COLUMNS = [
+    { id: 'todo', title: '할 일', statuses: ['todo', 'backlog'] },
+    { id: 'in_progress', title: '진행 중', statuses: ['in_progress'] },
+    { id: 'blocked', title: '막힘', statuses: ['blocked'] },
+    { id: 'review', title: '검토 대기', statuses: ['review'] },
+    { id: 'done', title: '완료·취소', statuses: ['done', 'cancelled'], closed: true },
+  ];
+  const $ = (id) => document.getElementById(id);
+  let tasks = [];
+  let openKey = null;
+
+  function h(tag, props, ...children) {
+    const node = document.createElement(tag);
+    if (props) {
+      for (const [k, v] of Object.entries(props)) {
+        if (v === undefined || v === null || v === false) continue;
+        if (k === 'class') node.className = v;
+        else if (k === 'text') node.textContent = v;
+        else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+        else node.setAttribute(k, v === true ? '' : String(v));
+      }
+    }
+    for (const child of children.flat()) {
+      if (child === null || child === undefined || child === false) continue;
+      node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    }
+    return node;
+  }
+
+  function toast(message, isError) {
+    const t = $('toast');
+    t.textContent = message;
+    t.className = 'toast show' + (isError ? ' error' : '');
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => { t.className = 'toast'; }, isError ? 6000 : 2500);
+  }
+
+  async function api(path, body) {
+    const opts = body === undefined ? {} : {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Board-Token': CFG.token },
+      body: JSON.stringify(body),
+    };
+    const res = await fetch(path, opts);
+    let data;
+    try { data = await res.json(); } catch (e) { throw new Error('서버 응답을 읽을 수 없습니다.'); }
+    if (!data.ok) throw new Error(data.error || '요청에 실패했습니다.');
+    return data.data;
+  }
+
+  function ago(iso) {
+    if (!iso) return '';
+    const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+    if (minutes < 1) return '방금';
+    if (minutes < 60) return minutes + '분 전';
+    if (minutes < 60 * 24) return Math.floor(minutes / 60) + '시간 전';
+    return Math.floor(minutes / 1440) + '일 전';
+  }
+  const localTime = (iso) => iso ? new Date(iso).toLocaleString('ko-KR') : '';
+
+  function tags(t) {
+    return [
+      t.phase && h('span', { class: 'chip', text: t.phase }),
+      t.priority === 'high' && h('span', { class: 'chip warn', text: '높음' }),
+      t.assignee && h('span', { class: 'chip', text: t.assignee }),
+      t.review_required && h('span', { class: 'chip review', text: '검토 필요' }),
+      t.stale && h('span', { class: 'chip bad', text: '정체' }),
+      t.waiting_on.length > 0 && h('span', { class: 'chip', text: '선행 대기 ' + t.waiting_on.join(', ') }),
+      t.status === 'backlog' && h('span', { class: 'chip', text: '보류' }),
+      t.status === 'cancelled' && h('span', { class: 'chip', text: '취소' }),
+    ];
+  }
+
+  function card(t) {
+    return h('button', { type: 'button', class: 'card ' + t.status, onclick: () => openTask(t.key) },
+      h('span', { class: 'key', text: t.key }),
+      h('span', { class: 'title', text: t.title }),
+      h('span', { class: 'tags' }, tags(t)));
+  }
+
+  function renderBoard() {
+    const phase = $('phase-filter').value;
+    const showClosed = $('show-closed').checked;
+    const board = $('board');
+    board.replaceChildren();
+    for (const col of COLUMNS) {
+      if (col.closed && !showClosed) continue;
+      let items = tasks.filter((t) => col.statuses.includes(t.status) && (!phase || t.phase === phase));
+      if (col.closed) items = items.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
+      board.append(h('div', { class: 'column ' + col.id },
+        h('h2', null, h('span', { text: col.title }), h('span', { text: String(items.length) })),
+        h('div', { class: 'cards' }, items.length ? items.map(card) : h('div', { class: 'empty', text: '없음' }))));
+    }
+    const phases = [...new Set(tasks.map((t) => t.phase).filter(Boolean))].sort();
+    const select = $('phase-filter');
+    const current = select.value;
+    select.replaceChildren(h('option', { value: '', text: '전체' }), ...phases.map((p) => h('option', { value: p, text: p })));
+    select.value = phases.includes(current) ? current : '';
+  }
+
+  function renderSummary(s) {
+    $('owner-chip').textContent = '소유자 ' + CFG.owner;
+    const c = s.counts;
+    $('counts').replaceChildren(...[
+      h('span', { class: 'chip review', text: '검토 대기 ' + c.review }),
+      h('span', { class: 'chip' + (c.blocked ? ' bad' : ''), text: '막힘 ' + c.blocked }),
+      h('span', { class: 'chip', text: '진행 중 ' + c.in_progress }),
+      h('span', { class: 'chip', text: '할 일 ' + (c.todo + c.backlog) }),
+      h('span', { class: 'chip good', text: '완료 ' + c.done }),
+      s.stale.length > 0 && h('span', { class: 'chip bad', text: '정체 ' + s.stale.length }),
+    ].filter(Boolean));
+    const link = (key, text) => h('button', { type: 'button', class: 'linklike', onclick: () => openTask(key), text });
+    $('review-list').replaceChildren(...(s.review_queue.length
+      ? s.review_queue.map((t) => h('li', null, link(t.key, t.key + ' ' + t.title), h('div', { class: 'small muted', text: (t.assignee || '-') + ' · ' + ago(t.updated_at) })))
+      : [h('li', { class: 'muted small', text: '검토할 과업이 없습니다.' })]));
+    $('agent-list').replaceChildren(...(s.agents.length
+      ? s.agents.map((a) => h('li', null,
+          h('div', null, h('strong', { text: a.name }), a.owner ? ' (소유자)' : ''),
+          h('div', { class: 'small muted' }, ago(a.last_seen), a.current_task ? [' · ', link(a.current_task, a.current_task)] : '')))
+      : [h('li', { class: 'muted small', text: '아직 활동한 에이전트가 없습니다.' })]));
+    $('recent-list').replaceChildren(...(s.recent_posts.length
+      ? s.recent_posts.slice().reverse().map((p) => h('li', null,
+          h('div', { class: 'small muted' }, p.author + ' · ' + (KIND[p.kind] || p.kind) + ' · ' + ago(p.created_at) + ' ', p.task ? link(p.task, p.task) : ''),
+          h('div', { class: 'small', text: p.body.length > 120 ? p.body.slice(0, 120) + '…' : p.body })))
+      : [h('li', { class: 'muted small', text: '기록이 없습니다.' })]));
+  }
+
+  async function refresh() {
+    try {
+      const [summary, list] = await Promise.all([api('/api/summary'), api('/api/tasks?closed=1')]);
+      tasks = list;
+      renderSummary(summary);
+      renderBoard();
+      $('updated').textContent = '갱신 ' + new Date().toLocaleTimeString('ko-KR');
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  function busyWhile(button, fn) {
+    return async () => {
+      button.disabled = true;
+      try { await fn(); } catch (e) { toast(e.message, true); } finally { button.disabled = false; }
+    };
+  }
+
+  function renderDrawer(t) {
+    $('d-key').replaceChildren(h('span', { text: t.key + ' · ' }), h('span', { class: 'chip' + (t.status === 'review' ? ' review' : ''), text: STATUS[t.status] }));
+    $('d-title').textContent = t.title;
+    const content = $('d-content');
+    const meta = h('dl', { class: 'meta' },
+      h('dt', { text: '단계' }), h('dd', { text: t.phase || '-' }),
+      h('dt', { text: '우선순위' }), h('dd', { text: PRIORITY[t.priority] || t.priority }),
+      h('dt', { text: '담당' }), h('dd', { text: (t.assignee || '-') + (t.stale ? ' (정체)' : '') }),
+      h('dt', { text: '검토 필요' }), h('dd', { text: t.review_required ? '예' : '아니오' }),
+      h('dt', { text: '라벨' }), h('dd', { text: t.labels.join(', ') || '-' }),
+      h('dt', { text: '만든 이' }), h('dd', { text: t.created_by + ' · ' + localTime(t.created_at) }),
+      h('dt', { text: '갱신' }), h('dd', { text: localTime(t.updated_at) }),
+      t.depends_on.length > 0 && [h('dt', { text: '선행 과업' }), h('dd', null, t.depends_on.map((d, i) => [i ? ', ' : '', h('button', { type: 'button', class: 'linklike', onclick: () => openTask(d.key), text: d.key + '(' + STATUS[d.status] + ')' })]))],
+      t.dependents.length > 0 && [h('dt', { text: '후속 과업' }), h('dd', null, t.dependents.map((d, i) => [i ? ', ' : '', h('button', { type: 'button', class: 'linklike', onclick: () => openTask(d.key), text: d.key })]))]);
+
+    const sections = [meta];
+    if (t.body) sections.push(h('div', { class: 'pre', text: t.body }));
+
+    if (t.status === 'review') {
+      const comment = h('textarea', { placeholder: '검토 의견 (수정 요청 시 필수)' });
+      const approve = h('button', { type: 'button', class: 'primary', text: '승인' });
+      const changes = h('button', { type: 'button', text: '수정 요청' });
+      approve.addEventListener('click', busyWhile(approve, async () => {
+        await api('/api/tasks/' + t.key + '/review', { decision: 'approve', comment: comment.value });
+        toast('승인했습니다.'); await reload(t.key);
+      }));
+      changes.addEventListener('click', busyWhile(changes, async () => {
+        await api('/api/tasks/' + t.key + '/review', { decision: 'changes', comment: comment.value });
+        toast('수정을 요청했습니다.'); await reload(t.key);
+      }));
+      sections.push(h('div', { class: 'reviewbox' }, h('strong', { text: '검토 결정' }), comment, h('div', { class: 'row' }, approve, changes)));
+    }
+
+    const statusSelect = h('select', { 'aria-label': '바꿀 상태' },
+      t.status === 'review' && h('option', { value: '', text: '바꿀 상태 선택', disabled: true, selected: true }),
+      Object.entries(STATUS).filter(([k]) => k !== 'review').map(([k, v]) => h('option', { value: k, text: v, selected: k === t.status })));
+    const statusNote = h('input', { type: 'text', placeholder: '메모 (선택)' });
+    const statusBtn = h('button', { type: 'button', text: '상태 변경' });
+    statusBtn.addEventListener('click', busyWhile(statusBtn, async () => {
+      await api('/api/tasks/' + t.key + '/status', { status: statusSelect.value, note: statusNote.value });
+      toast('상태를 바꿨습니다.'); await reload(t.key);
+    }));
+    sections.push(h('div', { class: 'section' }, h('h3', { text: '상태 바꾸기' }), h('div', { class: 'row' }, statusSelect, statusBtn), statusNote));
+
+    const kind = h('select', null, ['note', 'decision', 'question', 'progress'].map((k) => h('option', { value: k, text: KIND[k] })));
+    const body = h('textarea', { placeholder: '에이전트에게 남길 글' });
+    const postBtn = h('button', { type: 'button', class: 'primary', text: '글 남기기' });
+    postBtn.addEventListener('click', busyWhile(postBtn, async () => {
+      await api('/api/tasks/' + t.key + '/posts', { kind: kind.value, body: body.value });
+      toast('글을 남겼습니다.'); await reload(t.key);
+    }));
+    sections.push(h('div', { class: 'section' }, h('h3', { text: '글 남기기' }), body, h('div', { class: 'row' }, kind, postBtn)));
+
+    sections.push(h('div', { class: 'section' }, h('h3', { text: '기록 (' + t.posts.length + ')' }),
+      h('ol', { class: 'timeline' }, t.posts.slice().reverse().map((p) => h('li', { class: 'k-' + p.kind },
+        h('div', { class: 'who', text: p.author + ' · ' + (KIND[p.kind] || p.kind) + ' · ' + localTime(p.created_at) }),
+        h('div', { class: 'body', text: p.body }))))));
+    content.replaceChildren(...sections);
+  }
+
+  async function openTask(key) {
+    try {
+      const t = await api('/api/tasks/' + encodeURIComponent(key));
+      openKey = t.key;
+      renderDrawer(t);
+      $('drawer').classList.add('open');
+      $('drawer').setAttribute('aria-hidden', 'false');
+      $('overlay').classList.add('open');
+    } catch (e) { toast(e.message, true); }
+  }
+
+  function closeDrawer() {
+    openKey = null;
+    $('drawer').classList.remove('open');
+    $('drawer').setAttribute('aria-hidden', 'true');
+    $('overlay').classList.remove('open');
+  }
+
+  async function reload(key) {
+    await refresh();
+    if (key && openKey === key) {
+      const t = await api('/api/tasks/' + key);
+      renderDrawer(t);
+    }
+  }
+
+  function drawerBusy() {
+    const active = document.activeElement;
+    if (active && $('drawer').contains(active) && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT')) return true;
+    return [...$('drawer').querySelectorAll('textarea, input')].some((el) => el.value.trim() !== '');
+  }
+
+  $('d-close').addEventListener('click', closeDrawer);
+  $('overlay').addEventListener('click', closeDrawer);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && openKey) closeDrawer(); });
+  $('phase-filter').addEventListener('change', renderBoard);
+  $('show-closed').addEventListener('change', renderBoard);
+
+  const dialog = $('new-dialog');
+  $('new-task').addEventListener('click', () => { $('new-form').reset(); dialog.showModal(); });
+  $('new-cancel').addEventListener('click', () => dialog.close());
+  $('new-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = e.target.elements;
+    const split = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
+    try {
+      const t = await api('/api/tasks', {
+        title: f.title.value, phase: f.phase.value, priority: f.priority.value,
+        depends_on: split(f.deps.value), labels: split(f.labels.value),
+        review_required: f.review.checked, body: f.body.value,
+      });
+      dialog.close();
+      toast(t.key + ' 과업을 추가했습니다.');
+      await refresh();
+    } catch (err) { toast(err.message, true); }
+  });
+
+  refresh();
+  setInterval(async () => {
+    if (document.hidden) return;
+    await refresh();
+    if (openKey && !drawerBusy()) {
+      try { renderDrawer(await api('/api/tasks/' + openKey)); } catch (e) { /* keep last view */ }
+    }
+  }, 15000);
+})();
+</script>
+</body>
+</html>

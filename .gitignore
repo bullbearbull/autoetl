@@ -1,0 +1,17 @@
+# 에이전트 게시판 데이터 (로컬 전용)
+.board/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agent-board": {
+      "command": "python",
+      "args": ["tools/board/board.py", "mcp"]
+    }
+  }
+}
