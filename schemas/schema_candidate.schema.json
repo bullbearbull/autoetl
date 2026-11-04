@@ -1,0 +1,218 @@
+{
+  "$defs": {
+    "PhysicalType": {
+      "description": "물리 타입(1계층). docs/PLAN.md 타입 체계 참고.",
+      "enum": [
+        "integer",
+        "decimal",
+        "float",
+        "boolean",
+        "string",
+        "date",
+        "time",
+        "timestamp",
+        "timestamptz",
+        "json",
+        "binary"
+      ],
+      "title": "PhysicalType",
+      "type": "string"
+    },
+    "SchemaPattern": {
+      "description": "후보 생성 전략.",
+      "enum": [
+        "3nf",
+        "star",
+        "wide",
+        "timeseries",
+        "hybrid_jsonb"
+      ],
+      "title": "SchemaPattern",
+      "type": "string"
+    },
+    "TargetColumn": {
+      "additionalProperties": false,
+      "description": "대상 테이블 컬럼 정의.",
+      "properties": {
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "physical_type": {
+          "$ref": "#/$defs/PhysicalType"
+        },
+        "precision": {
+          "anyOf": [
+            {
+              "maximum": 38,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Precision"
+        },
+        "scale": {
+          "anyOf": [
+            {
+              "maximum": 38,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scale"
+        },
+        "source_columns": {
+          "description": "원본 컬럼(들)",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Columns",
+          "type": "array"
+        },
+        "nullable": {
+          "title": "Nullable",
+          "type": "boolean"
+        },
+        "is_primary_key": {
+          "default": false,
+          "title": "Is Primary Key",
+          "type": "boolean"
+        },
+        "foreign_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "'다른테이블(컬럼)' 형식의 참조",
+          "title": "Foreign Key"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "physical_type",
+        "source_columns",
+        "nullable"
+      ],
+      "title": "TargetColumn",
+      "type": "object"
+    },
+    "TargetTable": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/TargetColumn"
+          },
+          "minItems": 1,
+          "title": "Columns",
+          "type": "array"
+        },
+        "partition": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "시계열 파티셔닝 정의",
+          "title": "Partition"
+        },
+        "index": {
+          "description": "추가 인덱스 컬럼 목록",
+          "items": {
+            "type": "string"
+          },
+          "title": "Index",
+          "type": "array"
+        },
+        "is_sensitive_isolated": {
+          "default": false,
+          "description": "민감 컬럼 격리를 위해 분리한 테이블인지",
+          "title": "Is Sensitive Isolated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "columns"
+      ],
+      "title": "TargetTable",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "S9 산출물: 후보 스키마 하나. 코드가 만들고 LLM은 허용 연산으로만 보정한다.",
+  "properties": {
+    "contract_version": {
+      "default": "0.1.0",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "id": {
+      "description": "후보 ID. 예: 'C1'. 채점·권고에서 인용",
+      "title": "Id",
+      "type": "string"
+    },
+    "pattern": {
+      "$ref": "#/$defs/SchemaPattern"
+    },
+    "tables": {
+      "items": {
+        "$ref": "#/$defs/TargetTable"
+      },
+      "minItems": 1,
+      "title": "Tables",
+      "type": "array"
+    },
+    "rationale": {
+      "description": "이 전략을 만든 이유",
+      "title": "Rationale",
+      "type": "string"
+    },
+    "source": {
+      "default": "code",
+      "description": "생성 주체",
+      "pattern": "^(code|code\\+llm)$",
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "pattern",
+    "tables",
+    "rationale"
+  ],
+  "title": "SchemaCandidate",
+  "type": "object",
+  "$id": "https://autoetl.dev/schemas/schema_candidate.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

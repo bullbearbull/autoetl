@@ -1,0 +1,329 @@
+{
+  "$defs": {
+    "CategoricalStats": {
+      "additionalProperties": false,
+      "properties": {
+        "entropy": {
+          "description": "섀넌 엔트로피(비트)",
+          "minimum": 0,
+          "title": "Entropy",
+          "type": "number"
+        },
+        "top_values": {
+          "items": {
+            "$ref": "#/$defs/CategoryValue"
+          },
+          "maxItems": 20,
+          "title": "Top Values",
+          "type": "array"
+        },
+        "distinct_ratio": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Distinct Ratio",
+          "type": "number"
+        }
+      },
+      "required": [
+        "entropy",
+        "distinct_ratio"
+      ],
+      "title": "CategoricalStats",
+      "type": "object"
+    },
+    "CategoryValue": {
+      "additionalProperties": false,
+      "description": "범주 값과 비율. Secure 모드에서 외부 전송 시 토큰(CAT_01)으로 바뀐다.",
+      "properties": {
+        "value": {
+          "title": "Value",
+          "type": "string"
+        },
+        "count": {
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "rate": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Rate",
+          "type": "number"
+        }
+      },
+      "required": [
+        "value",
+        "count",
+        "rate"
+      ],
+      "title": "CategoryValue",
+      "type": "object"
+    },
+    "GapSummary": {
+      "additionalProperties": false,
+      "description": "시계열 결측 구간.",
+      "properties": {
+        "count": {
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "longest": {
+          "description": "가장 긴 구간 표현. 예: '2026-03-01 ~ 2026-04-11'",
+          "title": "Longest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "count",
+        "longest"
+      ],
+      "title": "GapSummary",
+      "type": "object"
+    },
+    "NumericStats": {
+      "additionalProperties": false,
+      "description": "수치 컬럼 분포와 정밀도.",
+      "properties": {
+        "mean": {
+          "title": "Mean",
+          "type": "number"
+        },
+        "std": {
+          "title": "Std",
+          "type": "number"
+        },
+        "minimum": {
+          "title": "Minimum",
+          "type": "number"
+        },
+        "maximum": {
+          "title": "Maximum",
+          "type": "number"
+        },
+        "p25": {
+          "title": "P25",
+          "type": "number"
+        },
+        "p50": {
+          "title": "P50",
+          "type": "number"
+        },
+        "p75": {
+          "title": "P75",
+          "type": "number"
+        },
+        "skew": {
+          "title": "Skew",
+          "type": "number"
+        },
+        "max_decimal_digits": {
+          "description": "정밀도 추정용 최대 소수 자릿수",
+          "minimum": 0,
+          "title": "Max Decimal Digits",
+          "type": "integer"
+        },
+        "outliers": {
+          "$ref": "#/$defs/OutlierSummary"
+        }
+      },
+      "required": [
+        "mean",
+        "std",
+        "minimum",
+        "maximum",
+        "p25",
+        "p50",
+        "p75",
+        "skew",
+        "max_decimal_digits",
+        "outliers"
+      ],
+      "title": "NumericStats",
+      "type": "object"
+    },
+    "OutlierMethod": {
+      "enum": [
+        "iqr",
+        "isolation_forest"
+      ],
+      "title": "OutlierMethod",
+      "type": "string"
+    },
+    "OutlierSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "$ref": "#/$defs/OutlierMethod"
+        },
+        "count": {
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "rate": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Rate",
+          "type": "number"
+        },
+        "bounds": {
+          "description": "예: 'IQR 1.5배: [12.0, 980.0]'",
+          "title": "Bounds",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "count",
+        "rate",
+        "bounds"
+      ],
+      "title": "OutlierSummary",
+      "type": "object"
+    },
+    "SeasonalitySummary": {
+      "additionalProperties": false,
+      "properties": {
+        "detected": {
+          "title": "Detected",
+          "type": "boolean"
+        },
+        "period": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "예: '7d', '12mo'",
+          "title": "Period"
+        },
+        "method": {
+          "default": "acf",
+          "pattern": "^(stl|acf)$",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "required": [
+        "detected"
+      ],
+      "title": "SeasonalitySummary",
+      "type": "object"
+    },
+    "StatsKind": {
+      "enum": [
+        "numeric",
+        "categorical",
+        "datetime",
+        "text",
+        "other"
+      ],
+      "title": "StatsKind",
+      "type": "string"
+    },
+    "TemporalStats": {
+      "additionalProperties": false,
+      "properties": {
+        "minimum": {
+          "description": "ISO 8601",
+          "title": "Minimum",
+          "type": "string"
+        },
+        "maximum": {
+          "description": "ISO 8601",
+          "title": "Maximum",
+          "type": "string"
+        },
+        "dominant_frequency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "예: '1D', '1h'",
+          "title": "Dominant Frequency"
+        },
+        "gaps": {
+          "$ref": "#/$defs/GapSummary"
+        },
+        "seasonality": {
+          "$ref": "#/$defs/SeasonalitySummary"
+        }
+      },
+      "required": [
+        "minimum",
+        "maximum",
+        "gaps",
+        "seasonality"
+      ],
+      "title": "TemporalStats",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "S4 산출물: 컬럼 하나의 심화 통계.\n\n종류(kind)에 따라 해당하는 하위 통계만 채운다. 나머지는 None으로 둔다.\n개별 값이 드러나는 최솟값·최댓값은 Secure 모드에서 외부로 나가지 않는다.",
+  "properties": {
+    "contract_version": {
+      "default": "0.1.0",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "column": {
+      "title": "Column",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/StatsKind"
+    },
+    "numeric": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NumericStats"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "categorical": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CategoricalStats"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "temporal": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TemporalStats"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "column",
+    "kind"
+  ],
+  "title": "ColumnStats",
+  "type": "object",
+  "$id": "https://autoetl.dev/schemas/column_stats.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

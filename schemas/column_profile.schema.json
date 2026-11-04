@@ -1,0 +1,148 @@
+{
+  "$defs": {
+    "LengthStats": {
+      "additionalProperties": false,
+      "description": "문자열 길이 분포. 값은 모두 문자열로 로드된 상태에서 잰다.",
+      "properties": {
+        "minimum": {
+          "minimum": 0,
+          "title": "Minimum",
+          "type": "integer"
+        },
+        "maximum": {
+          "minimum": 0,
+          "title": "Maximum",
+          "type": "integer"
+        },
+        "mean": {
+          "minimum": 0,
+          "title": "Mean",
+          "type": "number"
+        },
+        "p50": {
+          "minimum": 0,
+          "title": "P50",
+          "type": "number"
+        },
+        "p95": {
+          "minimum": 0,
+          "title": "P95",
+          "type": "number"
+        }
+      },
+      "required": [
+        "minimum",
+        "maximum",
+        "mean",
+        "p50",
+        "p95"
+      ],
+      "title": "LengthStats",
+      "type": "object"
+    },
+    "PatternMask": {
+      "additionalProperties": false,
+      "description": "형태 마스크와 그 비율. 예: 마스크 '9999-99-99'가 전체의 87%.",
+      "properties": {
+        "mask": {
+          "description": "'9' 숫자, 'a' 글자, 구두점은 그대로",
+          "title": "Mask",
+          "type": "string"
+        },
+        "count": {
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "rate": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Rate",
+          "type": "number"
+        }
+      },
+      "required": [
+        "mask",
+        "count",
+        "rate"
+      ],
+      "title": "PatternMask",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "S2 산출물: 컬럼 하나의 구조 프로파일.\n\n결측률, 고유값 수, 카디널리티 비율, 길이 분포, 형태 마스크 상위 k개를 담는다.\n데이터셋 수준의 중복 행 수는 S6 QualityReport의 유일성 항목에 기록한다.",
+  "properties": {
+    "contract_version": {
+      "default": "0.1.0",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "column": {
+      "title": "Column",
+      "type": "string"
+    },
+    "count": {
+      "description": "검사한 값 수(결측 제외)",
+      "minimum": 0,
+      "title": "Count",
+      "type": "integer"
+    },
+    "missing_count": {
+      "minimum": 0,
+      "title": "Missing Count",
+      "type": "integer"
+    },
+    "missing_rate": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Missing Rate",
+      "type": "number"
+    },
+    "unique_count": {
+      "minimum": 0,
+      "title": "Unique Count",
+      "type": "integer"
+    },
+    "cardinality_ratio": {
+      "description": "고유값 수 / 값 수",
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Cardinality Ratio",
+      "type": "number"
+    },
+    "length": {
+      "$ref": "#/$defs/LengthStats"
+    },
+    "top_patterns": {
+      "description": "형태 마스크 상위 k개(합이 1을 넘지 않음)",
+      "items": {
+        "$ref": "#/$defs/PatternMask"
+      },
+      "maxItems": 10,
+      "title": "Top Patterns",
+      "type": "array"
+    },
+    "notes": {
+      "description": "예: '앞자리 0 보존 필요'",
+      "items": {
+        "type": "string"
+      },
+      "title": "Notes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "column",
+    "count",
+    "missing_count",
+    "missing_rate",
+    "unique_count",
+    "cardinality_ratio",
+    "length"
+  ],
+  "title": "ColumnProfile",
+  "type": "object",
+  "$id": "https://autoetl.dev/schemas/column_profile.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

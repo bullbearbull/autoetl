@@ -1,0 +1,148 @@
+{
+  "$defs": {
+    "DimensionScore": {
+      "additionalProperties": false,
+      "properties": {
+        "score": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Score",
+          "type": "number"
+        },
+        "detail": {
+          "description": "점수 산정 근거 요약",
+          "title": "Detail",
+          "type": "string"
+        }
+      },
+      "required": [
+        "score",
+        "detail"
+      ],
+      "title": "DimensionScore",
+      "type": "object"
+    },
+    "QualityDimension": {
+      "enum": [
+        "completeness",
+        "validity",
+        "consistency",
+        "uniqueness"
+      ],
+      "title": "QualityDimension",
+      "type": "string"
+    },
+    "QualityIssue": {
+      "additionalProperties": false,
+      "description": "심각도별 이슈 한 건. 형식 혼재 같은 S2 관찰도 여기에 정리된다.",
+      "properties": {
+        "id": {
+          "description": "이슈 ID. 예: 'Q-0003'. 권고·보고서에서 인용된다",
+          "title": "Id",
+          "type": "string"
+        },
+        "dimension": {
+          "$ref": "#/$defs/QualityDimension"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "count": {
+          "default": 0,
+          "description": "영향 받은 행 수",
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "rate": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rate"
+        }
+      },
+      "required": [
+        "id",
+        "dimension",
+        "severity",
+        "message"
+      ],
+      "title": "QualityIssue",
+      "type": "object"
+    },
+    "Severity": {
+      "description": "품질 이슈 심각도.",
+      "enum": [
+        "info",
+        "warning",
+        "error",
+        "critical"
+      ],
+      "title": "Severity",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "S6 산출물: 품질 진단.\n\n완전성·유효성·일관성·유일성 네 차원 점수와 정제 권고로 이어질 이슈 목록.\n데이터셋 수준의 중복 행 수는 유일성 차원에 기록한다.",
+  "properties": {
+    "contract_version": {
+      "default": "0.1.0",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "completeness": {
+      "$ref": "#/$defs/DimensionScore"
+    },
+    "validity": {
+      "$ref": "#/$defs/DimensionScore"
+    },
+    "consistency": {
+      "$ref": "#/$defs/DimensionScore"
+    },
+    "uniqueness": {
+      "$ref": "#/$defs/DimensionScore"
+    },
+    "duplicate_row_count": {
+      "minimum": 0,
+      "title": "Duplicate Row Count",
+      "type": "integer"
+    },
+    "issues": {
+      "items": {
+        "$ref": "#/$defs/QualityIssue"
+      },
+      "title": "Issues",
+      "type": "array"
+    }
+  },
+  "required": [
+    "completeness",
+    "validity",
+    "consistency",
+    "uniqueness",
+    "duplicate_row_count"
+  ],
+  "title": "QualityReport",
+  "type": "object",
+  "$id": "https://autoetl.dev/schemas/quality_report.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -1,0 +1,140 @@
+{
+  "$defs": {
+    "CriterionScore": {
+      "additionalProperties": false,
+      "properties": {
+        "score": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Score",
+          "type": "number"
+        },
+        "detail": {
+          "title": "Detail",
+          "type": "string"
+        }
+      },
+      "required": [
+        "score",
+        "detail"
+      ],
+      "title": "CriterionScore",
+      "type": "object"
+    },
+    "Purpose": {
+      "description": "업로드 때 고르는 용도. 후보 스키마 채점 가중치가 용도별로 다르다.",
+      "enum": [
+        "oltp",
+        "analytics",
+        "archive"
+      ],
+      "title": "Purpose",
+      "type": "string"
+    },
+    "ValidationSummary": {
+      "additionalProperties": false,
+      "description": "S10 검증 결과. 임시 스키마 시험 적재까지 마친 결과만 채운다.",
+      "properties": {
+        "ddl_parse_ok": {
+          "title": "Ddl Parse Ok",
+          "type": "boolean"
+        },
+        "trial_load_ok": {
+          "title": "Trial Load Ok",
+          "type": "boolean"
+        },
+        "constraint_violation_count": {
+          "minimum": 0,
+          "title": "Constraint Violation Count",
+          "type": "integer"
+        },
+        "data_loss_rate": {
+          "description": "원본 대비 손실 비율",
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Data Loss Rate",
+          "type": "number"
+        }
+      },
+      "required": [
+        "ddl_parse_ok",
+        "trial_load_ok",
+        "constraint_violation_count",
+        "data_loss_rate"
+      ],
+      "title": "ValidationSummary",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "S10 산출물: 후보 하나의 평가 기준표 점수.\n\n항목별 0~100점을 매기고 용도(Purpose)별 가중합을 계산한다. 같은 데이터라도\n용도가 다르면 정답 스키마가 달라지기 때문이다.",
+  "properties": {
+    "contract_version": {
+      "default": "0.1.0",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "candidate_id": {
+      "title": "Candidate Id",
+      "type": "string"
+    },
+    "integrity": {
+      "$ref": "#/$defs/CriterionScore",
+      "description": "무결성: 제약 범위, FD 보존, 무손실 조인"
+    },
+    "redundancy": {
+      "$ref": "#/$defs/CriterionScore",
+      "description": "중복도"
+    },
+    "fitness": {
+      "$ref": "#/$defs/CriterionScore",
+      "description": "용도 적합성"
+    },
+    "load_simplicity": {
+      "$ref": "#/$defs/CriterionScore",
+      "description": "적재 단순성"
+    },
+    "storage_efficiency": {
+      "$ref": "#/$defs/CriterionScore",
+      "description": "저장 효율"
+    },
+    "extensibility": {
+      "$ref": "#/$defs/CriterionScore",
+      "description": "확장 용이성"
+    },
+    "security_isolation": {
+      "$ref": "#/$defs/CriterionScore",
+      "description": "민감 컬럼 격리"
+    },
+    "weighted_total": {
+      "description": "용도별 가중합 점수",
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Weighted Total",
+      "type": "number"
+    },
+    "purpose": {
+      "$ref": "#/$defs/Purpose"
+    },
+    "validation": {
+      "$ref": "#/$defs/ValidationSummary"
+    }
+  },
+  "required": [
+    "candidate_id",
+    "integrity",
+    "redundancy",
+    "fitness",
+    "load_simplicity",
+    "storage_efficiency",
+    "extensibility",
+    "security_isolation",
+    "weighted_total",
+    "purpose",
+    "validation"
+  ],
+  "title": "Scorecard",
+  "type": "object",
+  "$id": "https://autoetl.dev/schemas/scorecard.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -1,0 +1,104 @@
+{
+  "$defs": {
+    "ReportSection": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReportSectionId"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "artifact_refs": {
+          "description": "이 절을 채운 산출물 ID. 예: 'ColumnProfile:phone', 'Q-0003'",
+          "items": {
+            "type": "string"
+          },
+          "title": "Artifact Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ],
+      "title": "ReportSection",
+      "type": "object"
+    },
+    "ReportSectionId": {
+      "description": "보고서 표준 목차(docs/PLAN.md).",
+      "enum": [
+        "summary",
+        "dataset_overview",
+        "column_profiles",
+        "feature_classification",
+        "relations",
+        "patterns",
+        "quality",
+        "sensitivity",
+        "schema_comparison",
+        "load_plan",
+        "appendix"
+      ],
+      "title": "ReportSectionId",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "S14 산출물: 보고서.\n\nJSON 산출물을 템플릿(Jinja2)으로 렌더링해 HTML/PDF/Markdown으로 낸다.\n부록에는 분석 파라미터, SOP·프롬프트·모델 버전, 재현 정보가 들어간다.",
+  "properties": {
+    "contract_version": {
+      "default": "0.1.0",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "generated_at": {
+      "description": "ISO 8601",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "pipeline_version": {
+      "description": "autoetl 버전",
+      "title": "Pipeline Version",
+      "type": "string"
+    },
+    "sop_version": {
+      "default": "",
+      "description": "적용한 SOP 버전. 예: 'v1'",
+      "title": "Sop Version",
+      "type": "string"
+    },
+    "purpose": {
+      "default": "",
+      "description": "분석 때 고른 용도",
+      "title": "Purpose",
+      "type": "string"
+    },
+    "sections": {
+      "items": {
+        "$ref": "#/$defs/ReportSection"
+      },
+      "minItems": 1,
+      "title": "Sections",
+      "type": "array"
+    },
+    "reproduction": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "재현 정보. 예: {'input_sha256': '...', 'seed': '42'}",
+      "title": "Reproduction",
+      "type": "object"
+    }
+  },
+  "required": [
+    "generated_at",
+    "pipeline_version",
+    "sections"
+  ],
+  "title": "Report",
+  "type": "object",
+  "$id": "https://autoetl.dev/schemas/report.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

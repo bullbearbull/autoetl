@@ -1,0 +1,196 @@
+{
+  "$defs": {
+    "Evidence": {
+      "additionalProperties": false,
+      "description": "판단의 근거 인용. LLM 산출 계약에서 없는 ID나 모순된 인용은 반려된다.",
+      "properties": {
+        "ref": {
+          "description": "산출물 ID. 예: 'ColumnProfile:phone'",
+          "title": "Ref",
+          "type": "string"
+        },
+        "reason": {
+          "description": "이 근거가 무엇을 뒷받침하는지",
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ref",
+        "reason"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "PhysicalType": {
+      "description": "물리 타입(1계층). docs/PLAN.md 타입 체계 참고.",
+      "enum": [
+        "integer",
+        "decimal",
+        "float",
+        "boolean",
+        "string",
+        "date",
+        "time",
+        "timestamp",
+        "timestamptz",
+        "json",
+        "binary"
+      ],
+      "title": "PhysicalType",
+      "type": "string"
+    },
+    "SemanticType": {
+      "description": "의미 타입(2계층). docs/PLAN.md 의미 타입 목록 참고.",
+      "enum": [
+        "identifier",
+        "code",
+        "nominal_category",
+        "ordinal_category",
+        "continuous_number",
+        "discrete_number",
+        "count",
+        "amount",
+        "ratio",
+        "datetime",
+        "duration",
+        "coordinates",
+        "address",
+        "free_text",
+        "email",
+        "phone",
+        "url",
+        "resident_registration_number",
+        "business_registration_number",
+        "postal_code",
+        "legal_district_code",
+        "boolean_like",
+        "nested_json"
+      ],
+      "title": "SemanticType",
+      "type": "string"
+    },
+    "TypeAlternative": {
+      "additionalProperties": false,
+      "description": "차선 의미 타입 후보와 그 점수.",
+      "properties": {
+        "semantic_type": {
+          "$ref": "#/$defs/SemanticType"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "semantic_type",
+        "confidence"
+      ],
+      "title": "TypeAlternative",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "S3 산출물: 컬럼 하나의 물리·의미 타입 판정.\n\n탐지기 신뢰도가 임계치를 넘으면 코드 확정(llm_resolved=false)이고, 모호한 컬럼만\nLLM에 질의한다(llm_resolved=true). LLM 판정에는 Evidence 인용이 필수다.\ndecimal 정밀도와 자릿수는 통계에서 온다(소수점이 있는데 INTEGER로 두면 안 된다).",
+  "properties": {
+    "contract_version": {
+      "default": "0.1.0",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "column": {
+      "title": "Column",
+      "type": "string"
+    },
+    "physical_type": {
+      "$ref": "#/$defs/PhysicalType"
+    },
+    "semantic_type": {
+      "$ref": "#/$defs/SemanticType"
+    },
+    "precision": {
+      "anyOf": [
+        {
+          "maximum": 38,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "decimal(p,s)의 p",
+      "title": "Precision"
+    },
+    "scale": {
+      "anyOf": [
+        {
+          "maximum": 38,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "decimal(p,s)의 s",
+      "title": "Scale"
+    },
+    "detector": {
+      "description": "판정한 탐지기 이름. 예: 'regex.phone', 'llm'",
+      "title": "Detector",
+      "type": "string"
+    },
+    "confidence": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Confidence",
+      "type": "number"
+    },
+    "llm_resolved": {
+      "default": false,
+      "description": "임계치 미달로 LLM이 판정했는지",
+      "title": "Llm Resolved",
+      "type": "boolean"
+    },
+    "alternatives": {
+      "items": {
+        "$ref": "#/$defs/TypeAlternative"
+      },
+      "maxItems": 3,
+      "title": "Alternatives",
+      "type": "array"
+    },
+    "evidence": {
+      "description": "LLM 판정일 때 필수. 예: ColumnProfile의 형태 마스크 인용",
+      "items": {
+        "$ref": "#/$defs/Evidence"
+      },
+      "title": "Evidence",
+      "type": "array"
+    },
+    "notes": {
+      "description": "함정 처리 기록. 예: 'yyyyMMdd 정수 → date', '천 단위 콤마 제거'",
+      "items": {
+        "type": "string"
+      },
+      "title": "Notes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "column",
+    "physical_type",
+    "semantic_type",
+    "detector",
+    "confidence"
+  ],
+  "title": "TypeAssignment",
+  "type": "object",
+  "$id": "https://autoetl.dev/schemas/type_assignment.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

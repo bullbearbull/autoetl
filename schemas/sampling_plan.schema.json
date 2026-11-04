@@ -1,0 +1,135 @@
+{
+  "$defs": {
+    "SamplingMethod": {
+      "enum": [
+        "random",
+        "stratified",
+        "temporal_even",
+        "top_n"
+      ],
+      "title": "SamplingMethod",
+      "type": "string"
+    },
+    "Stratum": {
+      "additionalProperties": false,
+      "description": "층화 샘플의 층 하나.",
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        },
+        "weight": {
+          "description": "전체에서 이 층에 배정할 비율",
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Weight",
+          "type": "number"
+        }
+      },
+      "required": [
+        "column",
+        "value",
+        "weight"
+      ],
+      "title": "Stratum",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "S1 산출물: 샘플링 전략.\n\n전수 판정이 나면 샘플 없이 통계를 DuckDB로 스트리밍한다. 샘플 판정이면 시드를\n고정해 재현성을 보장한다.",
+  "properties": {
+    "contract_version": {
+      "default": "0.1.0",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "strategy": {
+      "pattern": "^(full|sample)$",
+      "title": "Strategy",
+      "type": "string"
+    },
+    "method": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SamplingMethod"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "전수일 때는 없음"
+    },
+    "total_rows": {
+      "minimum": 0,
+      "title": "Total Rows",
+      "type": "integer"
+    },
+    "sample_rows": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "샘플 크기. 전수일 때는 없음",
+      "title": "Sample Rows"
+    },
+    "seed": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "재현용 시드",
+      "title": "Seed"
+    },
+    "strata": {
+      "description": "층화 샘플의 층 정의",
+      "items": {
+        "$ref": "#/$defs/Stratum"
+      },
+      "title": "Strata",
+      "type": "array"
+    },
+    "temporal_column": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "시간 균등 샘플의 기준 컬럼",
+      "title": "Temporal Column"
+    },
+    "rationale": {
+      "description": "전수/샘플을 고른 이유",
+      "title": "Rationale",
+      "type": "string"
+    }
+  },
+  "required": [
+    "strategy",
+    "total_rows",
+    "rationale"
+  ],
+  "title": "SamplingPlan",
+  "type": "object",
+  "$id": "https://autoetl.dev/schemas/sampling_plan.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

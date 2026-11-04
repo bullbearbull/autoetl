@@ -1,0 +1,173 @@
+{
+  "$defs": {
+    "IngestFormat": {
+      "enum": [
+        "csv",
+        "tsv",
+        "xlsx",
+        "xls",
+        "json",
+        "parquet"
+      ],
+      "title": "IngestFormat",
+      "type": "string"
+    },
+    "SourceColumn": {
+      "additionalProperties": false,
+      "description": "정규화 후 컬럼 하나. 이름은 다중 행 헤더 해제 결과다.",
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "index": {
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "index"
+      ],
+      "title": "SourceColumn",
+      "type": "object"
+    },
+    "SourceFile": {
+      "additionalProperties": false,
+      "description": "정규화된 입력 파일 하나. 모든 값은 문자열로 로드된다.",
+      "properties": {
+        "path": {
+          "description": "원본 파일 경로 또는 표준화된 표시명",
+          "title": "Path",
+          "type": "string"
+        },
+        "format": {
+          "$ref": "#/$defs/IngestFormat"
+        },
+        "encoding": {
+          "description": "감지된 인코딩. 예: 'utf-8', 'cp949'",
+          "title": "Encoding",
+          "type": "string"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "재현성용 파일 해시. 업로드 스트림이면 생략",
+          "title": "Sha256"
+        },
+        "sheet": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "엑셀 시트 이름",
+          "title": "Sheet"
+        }
+      },
+      "required": [
+        "path",
+        "format",
+        "encoding",
+        "size_bytes"
+      ],
+      "title": "SourceFile",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "S0 산출물: 수집·정규화 결과 명세.\n\n인코딩 감지, 구분자·헤더 추론, 다중 행 헤더와 병합 셀 해제를 마친 뒤의 상태를\n기록한다. pandas 자동 형 변환으로 인한 정보 손실(앞자리 0, 지수 표기)을 막으려고\n모든 값을 문자열로 로드했음을 전제로 한다.",
+  "properties": {
+    "contract_version": {
+      "default": "0.1.0",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "files": {
+      "items": {
+        "$ref": "#/$defs/SourceFile"
+      },
+      "minItems": 1,
+      "title": "Files",
+      "type": "array"
+    },
+    "columns": {
+      "description": "정규화된 컬럼 순서",
+      "items": {
+        "$ref": "#/$defs/SourceColumn"
+      },
+      "minItems": 1,
+      "title": "Columns",
+      "type": "array"
+    },
+    "row_count": {
+      "description": "정규화 후 데이터 행 수",
+      "minimum": 0,
+      "title": "Row Count",
+      "type": "integer"
+    },
+    "delimiter": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "구분자. CSV 계열에서만",
+      "title": "Delimiter"
+    },
+    "header_row_count": {
+      "default": 1,
+      "description": "헤더로 소비한 행 수",
+      "minimum": 0,
+      "title": "Header Row Count",
+      "type": "integer"
+    },
+    "applied_normalizations": {
+      "description": "적용한 정규화 목록. 예: 'multi_row_header_flattened'",
+      "items": {
+        "type": "string"
+      },
+      "title": "Applied Normalizations",
+      "type": "array"
+    },
+    "warnings": {
+      "description": "비치명 경고. 예: '줄 3에서 따옴표 불일치', '빈 컬럼명을 col_7로 명명'",
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "files",
+    "columns",
+    "row_count"
+  ],
+  "title": "IngestManifest",
+  "type": "object",
+  "$id": "https://autoetl.dev/schemas/ingest_manifest.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}
