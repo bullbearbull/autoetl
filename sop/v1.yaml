@@ -1,0 +1,361 @@
+# Auto ETL 표준 분석 절차(SOP) v1 원본
+#
+# 이 파일이 단일 원본이다. 사람용 문서(docs/sop-v1.md)와 LLM 프롬프트 모음
+# (docs/prompts-v1.md)은 tools/build_sop.py가 여기서 생성한다. 두 문서를 직접
+# 고치지 않는다. 단계 정의의 근거는 docs/PLAN.md의 표준 분석 절차 절이다.
+# 출력 계약(contract)은 autoetl.contracts.ARTIFACTS의 키와 1:1로 대응한다.
+
+version: v1
+updated: "2026-11-05"
+
+# 모든 LLM 호출에 붙는 단계 브리프의 공통 골격. {{ }} 자리는 하네스가 채운다.
+brief_sections:
+  - 현재 위치
+  - 이전 결정 요약
+  - 이번 과업
+  - 출력 스키마
+  - 점검 항목
+
+brief_header: |
+  [Auto ETL SOP {{sop_version}} · {{step_id}} {{step_name}}]
+  현재 위치: {{position}}
+  이전 결정 요약: {{prior_decisions}}
+
+steps:
+  - id: S0
+    name: 수집·정규화
+    owner: code
+    goal: 인코딩·구분자·헤더를 추론하고 다중 행 헤더와 병합 셀을 해제해 모든 값을 문자열로 로드한다.
+    inputs:
+      - 원본 파일(CSV·TSV·엑셀 등)
+    output:
+      contract: ingest_manifest
+      cardinality: dataset
+    checklist:
+      - 감지한 인코딩의 신뢰도가 임계치를 넘는가 (CP949·EUC-KR 주의)
+      - 구분자·인용규칙 추론이 전체 파일에서 일관된가
+      - 다중 행 헤더·병합 셀 해제 후 컬럼명이 비거나 겹치지 않는가
+      - pandas 자동 형 변환으로 앞자리 0·지수 표기를 잃지 않았는가 (전부 문자열)
+    on_failure:
+      - 인코딩 불명이면 사용자에게 질문, 비대화 모드에서는 UTF-8 오류 시 latin-1으로 재시도하고 경고를 남긴다
+      - 헤더 추론 실패 시 1행을 데이터로 두고 col_1..N 자동 명명 후 경고를 남긴다
+
+  - id: S1
+    name: 샘플링 전략
+    owner: code
+    goal: 전수/샘플을 판정하고 샘플이면 층화·시간 균등 샘플을 설계한다. 전수는 DuckDB 스트리밍으로 통계한다.
+    inputs:
+      - ingest_manifest
+    output:
+      contract: sampling_plan
+      cardinality: dataset
+    checklist:
+      - 행 수·컬럼 수·메모리 예산에서 전수/샘플 판정이 근거와 함께 기록되었는가
+      - 샘플이면 시드가 고정되어 재현 가능한가
+      - 층화 기준 컬럼이 실제 존재하는가
+    on_failure:
+      - 층화 기준 컬럼에 결측이 많으면 무작위 샘플로 물리고 사유를 남긴다
+
+  - id: S2
+    name: 구조 프로파일
+    owner: code
+    goal: 컬럼별 결측률·고유값 수·카디널리티 비율·길이 분포·형태 마스크 상위 k개를 계산한다.
+    inputs:
+      - ingest_manifest
+      - sampling_plan
+    output:
+      contract: column_profile
+      cardinality: per_column
+    checklist:
+      - 결측 표기('-', 'N/A', '해당없음')를 결측으로 세었는가
+      - 형태 마스크 상위 k개의 비율 합이 1을 넘지 않는가
+      - 고유값 수가 메모리 한도 안에서 계산되었는가 (초과 시 근사 추정 명시)
+    on_failure:
+      - 프로파일 계산 오류 시 해당 컬럼을 건너뛰고 경고로 남긴다 (나머지는 진행)
+
+  - id: S3
+    name: 타입 추론
+    owner: code+llm
+    goal: 물리·의미 타입 2계층을 정한다. 탐지기 신뢰도가 임계치를 넘으면 코드 확정, 모호한 컬럼만 LLM에 질의한다.
+    inputs:
+      - column_profile
+      - sampling_plan
+    output:
+      contract: type_assignment
+      cardinality: per_column
+    checklist:
+      - 소수점·천 단위 콤마가 있는 컬럼이 INTEGER로 확정되지 않았는가
+      - 앞자리 0 코드·엑셀 날짜 시리얼·yyyyMMdd 정수 같은 함정을 검토했는가
+      - LLM 판정에는 evidence로 실제 프로파일 ID를 인용했는가
+      - 임계치 미달 컬럼만 LLM에 갔는가
+    on_failure:
+      - 탐지기 상위 두 후보의 격차가 미미하면 LLM 질의로 넘긴다
+      - LLM 실패(재시도 소진) 시 신뢰도 최상 후보를 코드 기본값으로 확정하고 'LLM 미확정'으로 표시한다
+    llm:
+      role: 임계치 미달 컬럼의 의미 타입 확정
+      task_cards:
+        - T-TYPE-RESOLVE
+      prompt: |
+        이번 과업: 컬럼 "{{column}}"의 프로파일 요약을 읽고 의미 타입 후보 중 하나를 고른다.
+        후보 목록(이것만 허용): {{candidates}}
+        프로파일 요약: {{profile_summary}}
+        형태 마스크 상위: {{top_patterns}}
+        출력 스키마: type_assignment (JSON Schema 준수, evidence 필수)
+        점검 항목:
+        - evidence에는 받은 프로파일에 실제 있는 ID만 인용한다.
+        - 소수점·콤마·통화 기호가 보이면 continuous/amount 계열만 고른다. integer 금지.
+        - 확신이 낮으면 alternatives에 차선을 남기고 confidence를 낮춘다.
+
+  - id: S4
+    name: 타입별 심화 통계
+    owner: code
+    goal: 수치는 분포·왜도·이상치(IQR, IsolationForest)·정밀도, 범주는 엔트로피, 시계열은 빈도·결측 구간·계절성(STL·ACF)을 계산한다.
+    inputs:
+      - type_assignment
+      - sampling_plan
+    output:
+      contract: column_stats
+      cardinality: per_column
+    checklist:
+      - 이상치 경계가 방법·기준과 함께 기록되었는가
+      - 시계열 계절성 주기가 탐지 방법(STL/ACF)과 함께 남았는가
+      - 정밀도(최대 소수 자릿수)가 decimal(p,s) 근거로 쓸 수 있게 계산되었는가
+    on_failure:
+      - IsolationForest 실패 시 IQR 결과로 대체하고 방법 필드에 반영한다
+      - 시계열로 판정했는데 파싱 실패가 많으면 kind를 categorical로 낮추고 경고를 남긴다
+
+  - id: S5
+    name: 관계 분석
+    owner: code
+    goal: 후보 키, 근사 함수 종속, 포함 종속(FK 후보), 상관(Pearson·Spearman·Cramér's V·상관비·상호정보량), 파생 컬럼, 계층 구조를 찾는다.
+    inputs:
+      - type_assignment
+    output:
+      contract: relation_graph
+      cardinality: dataset
+    checklist:
+      - FD 좌변이 2~3개 이내로 제한되었는가 (조합 폭발 방지)
+      - FD는 샘플 탐색 후 전수 검증을 거쳤는가
+      - 포함 종속의 inclusion_rate가 임계치 이상인 것만 FK 후보로 올렸는가
+      - 대용량은 DuckDB로 계산했는가
+    on_failure:
+      - 전수 FD 검증이 느리면 샘플 결과를 '샘플 검증'으로 표시하고 나중에 재검증 큐에 올린다
+
+  - id: S6
+    name: 품질 진단
+    owner: code
+    goal: 완전성·유효성·일관성·유일성을 진단하고 형식 혼재를 찾아 심각도별 이슈 목록을 만든다.
+    inputs:
+      - column_profile
+      - type_assignment
+    output:
+      contract: quality_report
+      cardinality: dataset
+    checklist:
+      - 4개 차원 점수에 산정 근거가 붙었는가
+      - 데이터셋 중복 행 수가 유일성에 반영되었는가
+      - 이슈 ID(Q-XXXX)가 후속 단계(권고·보고서)에서 인용 가능한가
+    on_failure:
+      - 차원 점수 계산 실패 시 해당 차원을 결측 처리하고 보고서에 명시한다 (전체 중단 없음)
+
+  - id: S7
+    name: 민감도 분류
+    owner: code
+    goal: 주민번호·카드번호(Luhn)·전화·이메일·계좌·주소를 탐지하고 체크섬을 검증해 L0~L3 등급을 매긴다.
+    inputs:
+      - column_profile
+      - type_assignment
+    output:
+      contract: sensitivity_map
+      cardinality: dataset
+    checklist:
+      - 체크섬 검증 가능한 종류(주민번호·카드번호·사업자번호)는 검증 결과가 남았는가
+      - 판정 근거(탐지기·일치율·신뢰도)가 필드로 남았는가
+      - 한국 도메인 팩(법정동코드 등) 규칙이 적용되었는가
+    on_failure:
+      - 탐지기 충돌 시 더 높은 등급으로 판정하고 근거에 둘 다 기록한다
+
+  - id: S8
+    name: 의미 해석
+    owner: llm
+    goal: 컬럼 의미·엔터티 식별·표준 영문 이름·업무 도메인을 추정한다. 모든 판단에 근거 인용이 필수다.
+    inputs:
+      - column_profile
+      - type_assignment
+      - relation_graph
+    output:
+      contract: semantic_model
+      cardinality: dataset
+    checklist:
+      - 표준 영문 이름이 소문자 스네이크 규칙을 지키는가
+      - 엔터티 묶음이 FD 결과와 모순되지 않는가
+      - evidence 인용이 실제 산출물 ID인가 (검증기가 반려)
+      - 확신이 낮은 항목은 사용자 질문으로 남겼는가
+    on_failure:
+      - 재시도 소진 시 미확정 컬럼을 unresolved_columns에 남기고 계속 진행
+    llm:
+      role: 의미 해석 전체 (T-NAME은 컬럼 단위, T-ENTITY-GROUP은 묶음 단위)
+      task_cards:
+        - T-NAME
+        - T-ENTITY-GROUP
+      prompt: |
+        이번 과업: 컬럼 의미 해석과 표준 영문 이름, 엔터티 묶음을 만든다.
+        컬럼 정보: {{column_block}} (이름·의미 타입·프로파일 요약)
+        FD 기반 묶음 후보: {{entity_candidates}}
+        도메인 사전 후보: {{domain_dict_candidates}}
+        출력 스키마: semantic_model (JSON Schema 준수, evidence 필수)
+        점검 항목:
+        - 표준 이름은 ^[a-z][a-z0-9_]*$ 를 지킨다. 원본 이름과 다르면 뜻을 유지한다.
+        - 엔터티는 FD 결과와 모순되지 않게 고른다. 근거 ID를 인용한다.
+        - 추측이 섞이면 questions에 사용자 질문을 만든다. 지어내지 않는다.
+
+  - id: S9
+    name: 후보 스키마 생성
+    owner: code+llm
+    goal: 코드가 3NF·스타·단일 와이드·시계열·하이브리드(JSONB) 후보를 만들고 LLM은 허용 연산으로만 보정한다.
+    inputs:
+      - semantic_model
+      - relation_graph
+      - sensitivity_map
+    output:
+      contract: schema_candidate
+      cardinality: per_candidate
+    checklist:
+      - 후보마다 테이블·컬럼이 원본 컬럼을 빠짐없이 덮는가 (무손실)
+      - 민감 컬럼 격리 후보가 최소 1개 있는가 (보안 격리 평가용)
+      - LLM 보정은 허용 연산(rename·change_type·split·merge·add_index)만 썼는가
+      - 시계열 후보엔 파티셔닝·BRIN 근거가 있는가
+    on_failure:
+      - 생성기 오류 시 전략별로 독립 진행 (한 전략 실패가 전체를 막지 않는다)
+      - LLM 보정 무효(허용 연산 위반)면 코드 결과를 그대로 둔다
+    llm:
+      role: 후보 보정 (후보·점수표를 받아 허용 연산만 적용)
+      task_cards:
+        - T-CANDIDATE-REVIEW
+      prompt: |
+        이번 과업: 후보 스키마를 허용 연산 안에서만 보정한다.
+        후보: {{candidate_summary}} (테이블·컬럼·근거)
+        점수표: {{scorecard_summary}}
+        허용 연산: rename, change_type, split, merge, add_index (이것만 가능)
+        출력 스키마: schema_candidate (source는 "code+llm")
+        점검 항목:
+        - 원본 컬럼이 사라지거나 중복되지 않게 보정한다 (무손실 유지).
+        - 근거 없는 이름·타입 변경은 하지 않는다. 이유를 rationale에 남긴다.
+        - 점수표의 낮은 항목만 골라 고친다. 전면 재작성 금지.
+
+  - id: S10
+    name: 검증·채점
+    owner: code
+    goal: DDL 파싱, 임시 스키마 시험 적재, 제약 위반·데이터 손실률을 재고 평가 기준표(7항목)를 0~100점으로 채점하고 용도별 가중합을 낸다.
+    inputs:
+      - schema_candidate
+    output:
+      contract: scorecard
+      cardinality: per_candidate
+    checklist:
+      - DDL이 sqlglot으로 파싱·검증되었는가
+      - 임시 스키마 시험 적재를 실제로 돌렸는가 (PostgreSQL 없으면 내장 배포판 검토)
+      - 데이터 손실률이 원본 대비로 계산되었는가
+      - 용도(OLTP·분석·보관)별 가중합이 계산되었는가
+    on_failure:
+      - DDL 파싱 실패 시 해당 후보를 실격 처리하고 점수 0으로 기록 (파이프라인은 계속)
+      - 시험 적재 환경이 없으면 검증 요약에 '미실행'으로 표시하고 권고에서 제외
+
+  - id: S11
+    name: 권고
+    owner: llm
+    goal: 후보를 비교해 순위와 장단점, 추천 사유를 만든다. 모든 사유에 근거 ID 인용이 필수다.
+    inputs:
+      - scorecard
+      - schema_candidate
+    output:
+      contract: recommendation
+      cardinality: dataset
+    checklist:
+      - 순위가 점수표와 모순되지 않는가 (점수 역전 주장은 반려)
+      - 추천 사유마다 Scorecard 항목 인용이 있는가
+      - 주의사항(caution)에 사용자가 확인할 포인트가 남았는가
+    on_failure:
+      - LLM 실패 시 최고 가중합 점수 후보를 규칙 기준으로 추천하고 'LLM 미확정'으로 표시
+    llm:
+      role: 순위·사유 작성
+      task_cards:
+        - T-RECOMMEND
+      prompt: |
+        이번 과업: 점수표를 읽어 후보 순위와 추천 사유를 쓴다.
+        점수표: {{scorecard_summary}} (항목별 점수·근거)
+        후보 요약: {{candidate_summaries}}
+        출력 스키마: recommendation (JSON Schema 준수, reasons에 Evidence 필수)
+        점검 항목:
+        - 가중합 점수와 순위가 어긋나면 점수를 따른다. 임의 재평가 금지.
+        - 모든 사유에 Scorecard:... 인용을 붙인다. 없는 근거 금지.
+        - tradeoffs는 사용자가 이해할 업무 언어로 쓴다.
+
+  - id: S12
+    name: 선택
+    owner: user
+    goal: 사용자가 후보를 고르고 수정한다. 수정은 재검증을 거쳐 확정된다.
+    inputs:
+      - recommendation
+      - schema_candidate
+      - scorecard
+    output:
+      contract: selected_schema
+      cardinality: dataset
+    checklist:
+      - 수정이 허용 연산 안에 있는가
+      - 수정 후 재검증(revalidated)을 통과했는가
+      - 비대화 모드에서는 추천안을 자동 선택하고 그 사실이 기록되었는가
+    on_failure:
+      - 재검증 실패 시 원본 후보로 되돌리고 실패 이유를 사용자에게 보여준다
+
+  - id: S13
+    name: 적재 플랜
+    owner: code+llm
+    goal: 매핑·변환 규칙·적재 순서(FK 의존)·증분 전략·오류 행 격리를 정한다. LLM은 변환 규칙 설명·증분 추천만 보조한다.
+    inputs:
+      - selected_schema
+      - type_assignment
+      - quality_report
+    output:
+      contract: load_plan
+      cardinality: dataset
+    checklist:
+      - 모든 원본 컬럼이 매핑에 포함되었는가 (누락 컬럼 금지)
+      - 적재 순서가 FK 의존을 지키는가
+      - 기대 행 수(정상 행 기준)가 명시되었는가
+      - 오류 행 격리 테이블과 중단 임계율이 정해졌는가
+    on_failure:
+      - 매핑 불가 컬럼은 격리 대상으로 명시하고 계속 (전체 중단 없음)
+    llm:
+      role: 변환 규칙 설명·증분 전략 추천 보조 (판단은 코드가 소유)
+      task_cards: []
+      prompt: |
+        이번 과업: 적재 플랜의 변환 규칙 설명과 증분 전략 추천안을 쓴다.
+        선택 스키마: {{selected_summary}}
+        품질 이슈: {{quality_issues}}
+        출력 스키마: load_plan의 transform 설명·increment 권고 구간 (최종 확정은 코드)
+        점검 항목:
+        - 품질 이슈(Q-XXXX)와 모순되는 변환을 제안하지 않는다.
+        - upsert 키 후보는 실제 유일성(FD·후보 키) 근거만 인용한다.
+
+  - id: S14
+    name: 보고서
+    owner: code
+    goal: 앞 단계 산출물을 표준 목차 11절로 묶어 Jinja2 템플릿으로 렌더링한다(HTML/PDF/Markdown).
+    inputs:
+      - ingest_manifest
+      - column_profile
+      - quality_report
+      - sensitivity_map
+      - scorecard
+      - load_plan
+    output:
+      contract: report
+      cardinality: dataset
+    checklist:
+      - 표준 목차 11절이 모두 있는가
+      - 부록에 분석 파라미터·SOP 버전·재현 정보가 남았는가
+      - 민감 등급 컬럼의 실제 값이 보고서 본문에 노출되지 않는가
+    on_failure:
+      - 절 생성 실패 시 해당 절을 '생성 실패'로 표시하고 나머지를 렌더링한다
