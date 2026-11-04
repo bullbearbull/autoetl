@@ -1,35 +1,47 @@
 # AGENTS.md — 에이전트 작업 규칙
 
 이 저장소는 Auto ETL·Auto Parser 플랫폼을 AI 에이전트가 구현하고 소유자(사람)가 핵심을 검토하는 방식으로 개발한다.
-계획의 원본은 소유자가 관리하는 계획 문서이고, 실행 상태는 로컬 에이전트 게시판(`tools/board`)에서 관리한다.
+어떤 모델이나 코딩 도구(GLM, Claude, Codex 등)를 쓰든 이 규칙은 같다.
 
-- 계획 문서: https://claude.ai/artifact/WZEYFN6HJSxyDiEH6WiqVM (소유자가 공유한 경우에만 열린다)
-- 게시판 사용법: `tools/board/README.md`
+- 계획: `docs/PLAN.md` (소유자가 관리하는 원본 계획 문서의 사본. 직접 고치지 않는다)
+- 실행 상태: 로컬 에이전트 게시판 `tools/board` (사용법: `tools/board/README.md`)
 
 ## 1. 시작할 때
 
-1. 자기 이름을 정한다. 세션마다 겹치지 않게 짓는다 (예: `claude-a`, `codex-1`).
-   - macOS·Linux: `export BOARD_AGENT=claude-a`
-   - Windows PowerShell: `$env:BOARD_AGENT = "claude-a"`
-2. 게시판 상태를 확인한다: `python tools/board/board.py summary`
-3. 다음 과업을 고른다: `python tools/board/board.py next`
-4. 과업을 맡는다: `python tools/board/board.py claim T-0002`
+1. 이 파일을 끝까지 읽는다. 그다음 `docs/PLAN.md`에서 지금 단계(P0, P1 …)와 관련된 섹션을 읽는다.
+2. 자기 이름을 정한다. 세션마다 겹치지 않게 짓는다 (예: `glm-a`, `glm-b`).
+3. **모든 board 명령에 `--as 자기이름`을 붙인다.** 명령마다 셸이 새로 시작되는 도구가 많아서 환경변수는 유지되지 않을 수 있다.
+4. 게시판 상태를 확인하고 다음 과업을 맡는다.
 
-아래 예시는 `board` = `python tools/board/board.py`로 줄여 쓴다.
-MCP 서버가 연결돼 있으면 같은 일을 도구(`next_task`, `claim_task` 등)로 해도 된다.
+```bash
+python3 tools/board/board.py summary
+```
+
+```bash
+python3 tools/board/board.py next --as glm-a
+```
+
+```bash
+python3 tools/board/board.py claim T-0002 --as glm-a
+```
+
+아래에서 `board`는 `python3 tools/board/board.py`를 줄인 것이다 (Windows는 `python` 또는 `py`).
+MCP를 지원하는 도구라면 게시판 MCP 서버를 연결해 같은 일을 도구로 해도 된다. 이때도 `agent` 인자에 자기 이름을 넣는다.
 
 ## 2. 작업 흐름
 
 1. 과업 하나 = 브랜치(또는 git worktree) 하나. 브랜치 이름에 과업 번호를 넣는다 (예: `t-0002-ci`).
-2. 맡은 뒤 계획을 짧게 남긴다: `board post T-0002 -k progress -m "계획: ..."`
+2. 맡은 뒤 계획을 짧게 남긴다: `board post T-0002 -k progress -m "계획: ..." --as glm-a`
 3. 의미 있는 단계마다, 그리고 최소 30분마다 진행 보고를 남긴다. 60분 동안 갱신이 없으면 정체로 표시되고 다른 에이전트가 가져갈 수 있다.
-4. 결정을 내렸으면 `-k decision`, 소유자 판단이 필요하면 `-k question`, 막히면 `board status T-0002 blocked -m "이유"`.
+4. 결정을 내렸으면 `-k decision`, 소유자 판단이 필요하면 `-k question`으로 남긴다. 막히면 `board status T-0002 blocked -m "이유" --as glm-a`.
 5. 마무리 전에 테스트·린트·타입 검사를 통과시킨다.
 6. 끝내는 방법은 과업의 `검토 필요` 표시에 따라 다르다.
-   - 검토 필요: `board review request T-0002 --file review.md` 후 멈춘다. 소유자가 승인하면 완료된다.
-   - 검토 불필요: `board status T-0002 done -m "검증 결과 요약"`
-7. 수정 요청을 받으면 과업이 다시 진행 중이 된다. 의견을 반영하고 다시 검토를 요청한다.
-8. 이어서 할 수 없으면 이유를 남기고 내려놓는다: `board release T-0002 -m "이유와 남은 일"`
+   - 검토 필요: `board review request T-0002 --file review.md --as glm-a` 후 **멈추고 소유자에게 검토를 기다린다고 알린다.** 소유자가 승인하면 완료된다.
+   - 검토 불필요: `board status T-0002 done -m "검증 결과 요약" --as glm-a`
+7. 수정 요청을 받으면 과업이 다시 진행 중이 된다. `board show T-0002`로 의견을 읽고 반영한 뒤 다시 검토를 요청한다.
+8. 이어서 할 수 없으면 이유를 남기고 내려놓는다: `board release T-0002 -m "이유와 남은 일" --as glm-a`
+
+여러 줄의 글은 파일로 써서 `--file`로 넘긴다. 따옴표와 줄바꿈이 깨지지 않는다.
 
 ## 3. 반드시 소유자가 검토하는 변경
 
@@ -48,7 +60,7 @@ MCP 서버가 연결돼 있으면 같은 일을 도구(`next_task`, `claim_task`
 - 승인·수정 요청(`board review approve|changes`)을 실행하지 않는다. 소유자만 한다.
 - 다른 에이전트가 맡은 과업을 가져오지 않는다. 정체 표시가 붙은 경우에만 `claim --steal`로 이어받고 이유를 글로 남긴다.
 - `검토 필요` 표시를 해제하지 않는다. 과업을 취소하지 않는다 (필요하면 question 글로 제안한다).
-- `.board/` 파일을 직접 고치거나 지우지 않는다.
+- `.board/` 파일과 `docs/PLAN.md`를 직접 고치거나 지우지 않는다. 계획을 바꿔야 하면 question 글로 제안한다.
 - 실제 데이터 값, API 키, 개인정보를 게시판·로그·커밋에 쓰지 않는다.
 - 요청받지 않은 범위의 로직을 바꾸지 않는다.
 

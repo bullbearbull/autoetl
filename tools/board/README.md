@@ -48,7 +48,8 @@ python tools/board/board.py review changes T-0001 --as 내이름 -m "고칠 점"
 
 ## 에이전트: 기본 명령
 
-에이전트 이름은 `--as 이름` 또는 환경변수 `BOARD_AGENT`로 정한다. 작업 규칙은 저장소 루트의 `AGENTS.md`에 있다.
+에이전트 이름은 명령마다 `--as 이름`으로 넘긴다. 셸 환경이 유지되는 곳이라면 환경변수 `BOARD_AGENT`를 써도 된다.
+작업 규칙은 저장소 루트의 `AGENTS.md`에 있다. 아래 표에서는 `--as`를 생략했다.
 
 | 하고 싶은 일 | 명령 |
 | --- | --- |
@@ -66,7 +67,7 @@ python tools/board/board.py review changes T-0001 --as 내이름 -m "고칠 점"
 | 목록 | `board list [--all] [--mine] [--status review]` |
 | 기계용 출력 | 아무 명령에 `--json` |
 
-`board`는 `python tools/board/board.py`를 줄인 것이다. `-m -`를 쓰면 표준 입력에서 내용을 읽는다.
+`board`는 `python tools/board/board.py`를 줄인 것이다 (macOS·Linux는 보통 `python3`). `-m -`를 쓰면 표준 입력에서 내용을 읽는다.
 
 ## 규칙 (게시판이 직접 막는 것)
 
@@ -80,14 +81,15 @@ python tools/board/board.py review changes T-0001 --as 내이름 -m "고칠 점"
 
 ## MCP 서버 (선택)
 
-Claude Code 같은 MCP 지원 에이전트가 게시판을 도구로 쓰게 하려면 MCP Python SDK를 설치한다.
+MCP를 지원하는 코딩 도구라면 게시판을 도구로 쓰게 할 수 있다. 먼저 MCP Python SDK를 설치한다.
 
 ```bash
 pip install mcp
 ```
 
-저장소 루트의 `.mcp.json.example`을 `.mcp.json`으로 복사하면 Claude Code가 `agent-board` 서버를 띄운다.
-Windows에서 `python`이 다른 이름이면 `command`를 `py` 등으로 바꾼다.
+도구의 MCP 설정에 stdio 서버 하나를 등록하면 된다. 명령은 `python3`, 인자는 `tools/board/board.py mcp`이고, 작업 폴더는 저장소 루트다.
+Claude Code는 저장소 루트의 `.mcp.json.example`을 `.mcp.json`으로 복사하면 된다. 다른 도구는 같은 명령과 인자를 그 도구의 MCP 설정 화면이나 파일에 넣는다.
+Windows에서는 명령을 `python` 또는 `py`로 바꾼다. MCP 없이도 CLI만으로 모든 기능을 쓸 수 있다.
 도구: `board_summary`, `list_tasks`, `get_task`, `next_task`, `claim_task`, `release_task`, `set_status`, `post_update`, `request_review`, `add_task`, `heartbeat`. 승인 도구는 일부러 넣지 않았다.
 
 ## 테스트
