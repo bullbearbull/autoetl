@@ -1,0 +1,271 @@
+{
+  "$defs": {
+    "CandidateKey": {
+      "additionalProperties": false,
+      "description": "후보 키. 실제 데이터에서 유일성이 확인된 컬럼 조합.",
+      "properties": {
+        "columns": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Columns",
+          "type": "array"
+        },
+        "unique": {
+          "title": "Unique",
+          "type": "boolean"
+        },
+        "violation_count": {
+          "description": "유일성 위반 행 수",
+          "minimum": 0,
+          "title": "Violation Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "columns",
+        "unique",
+        "violation_count"
+      ],
+      "title": "CandidateKey",
+      "type": "object"
+    },
+    "Correlation": {
+      "additionalProperties": false,
+      "properties": {
+        "a": {
+          "title": "A",
+          "type": "string"
+        },
+        "b": {
+          "title": "B",
+          "type": "string"
+        },
+        "method": {
+          "$ref": "#/$defs/CorrelationMethod"
+        },
+        "value": {
+          "description": "상호정보량 등 [0,1] 지표는 양수로만 온다",
+          "maximum": 1,
+          "minimum": -1,
+          "title": "Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "a",
+        "b",
+        "method",
+        "value"
+      ],
+      "title": "Correlation",
+      "type": "object"
+    },
+    "CorrelationMethod": {
+      "enum": [
+        "pearson",
+        "spearman",
+        "cramers_v",
+        "correlation_ratio",
+        "mutual_info"
+      ],
+      "title": "CorrelationMethod",
+      "type": "string"
+    },
+    "Derivation": {
+      "additionalProperties": false,
+      "description": "파생 컬럼 후보. 예: amount = unit_price * quantity.",
+      "properties": {
+        "target": {
+          "title": "Target",
+          "type": "string"
+        },
+        "sources": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Sources",
+          "type": "array"
+        },
+        "rule_hint": {
+          "description": "사람이 확인할 수 있는 규칙 설명",
+          "title": "Rule Hint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "sources",
+        "rule_hint"
+      ],
+      "title": "Derivation",
+      "type": "object"
+    },
+    "FunctionalDependency": {
+      "additionalProperties": false,
+      "description": "근사 함수 종속. lhs → rhs가 성립하는 비율과 위반 수를 함께 둔다.",
+      "properties": {
+        "lhs": {
+          "description": "결정자(좌변). 조합 폭발 제한으로 2~3개 이내",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "title": "Lhs",
+          "type": "array"
+        },
+        "rhs": {
+          "title": "Rhs",
+          "type": "string"
+        },
+        "support": {
+          "description": "lhs 값 중 rhs가 유일한 비율",
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Support",
+          "type": "number"
+        },
+        "violation_count": {
+          "minimum": 0,
+          "title": "Violation Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "lhs",
+        "rhs",
+        "support",
+        "violation_count"
+      ],
+      "title": "FunctionalDependency",
+      "type": "object"
+    },
+    "Hierarchy": {
+      "additionalProperties": false,
+      "description": "계층 구조. 예: legal_dong_code → city → district.",
+      "properties": {
+        "path": {
+          "description": "상위 → 하위 순서",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2,
+          "title": "Path",
+          "type": "array"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "Hierarchy",
+      "type": "object"
+    },
+    "InclusionDependency": {
+      "additionalProperties": false,
+      "description": "포함 종속(외래 키 후보). 단일 데이터셋 안에서도 성립할 수 있다.",
+      "properties": {
+        "child_columns": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Child Columns",
+          "type": "array"
+        },
+        "parent_columns": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Parent Columns",
+          "type": "array"
+        },
+        "inclusion_rate": {
+          "description": "child 값이 parent에 포함된 비율",
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Inclusion Rate",
+          "type": "number"
+        },
+        "parent_table": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "다중 입력일 때 부모 테이블명",
+          "title": "Parent Table"
+        }
+      },
+      "required": [
+        "child_columns",
+        "parent_columns",
+        "inclusion_rate"
+      ],
+      "title": "InclusionDependency",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "S5 산출물: 관계 분석 결과 그래프.\n\n후보 키, 근사 함수 종속, 포함 종속, 상관, 파생, 계층을 담는다. FD 탐색은 좌변\n크기 제한과 샘플 탐색 후 전수 검증으로 조합 폭발을 제어한다.",
+  "properties": {
+    "contract_version": {
+      "default": "0.1.0",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "candidate_keys": {
+      "items": {
+        "$ref": "#/$defs/CandidateKey"
+      },
+      "title": "Candidate Keys",
+      "type": "array"
+    },
+    "functional_dependencies": {
+      "items": {
+        "$ref": "#/$defs/FunctionalDependency"
+      },
+      "title": "Functional Dependencies",
+      "type": "array"
+    },
+    "inclusion_dependencies": {
+      "items": {
+        "$ref": "#/$defs/InclusionDependency"
+      },
+      "title": "Inclusion Dependencies",
+      "type": "array"
+    },
+    "correlations": {
+      "items": {
+        "$ref": "#/$defs/Correlation"
+      },
+      "title": "Correlations",
+      "type": "array"
+    },
+    "derivations": {
+      "items": {
+        "$ref": "#/$defs/Derivation"
+      },
+      "title": "Derivations",
+      "type": "array"
+    },
+    "hierarchies": {
+      "items": {
+        "$ref": "#/$defs/Hierarchy"
+      },
+      "title": "Hierarchies",
+      "type": "array"
+    }
+  },
+  "title": "RelationGraph",
+  "type": "object",
+  "$id": "https://autoetl.dev/schemas/relation_graph.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

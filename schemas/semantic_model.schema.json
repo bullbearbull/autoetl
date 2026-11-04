@@ -1,0 +1,198 @@
+{
+  "$defs": {
+    "ColumnMeaning": {
+      "additionalProperties": false,
+      "description": "컬럼 하나의 의미 해석과 표준 영문 이름.",
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "meaning": {
+          "description": "업무 언어로 쓴 컬럼 의미",
+          "title": "Meaning",
+          "type": "string"
+        },
+        "standard_name": {
+          "description": "표준 영문 이름(소문자 스네이크)",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Standard Name",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "minItems": 1,
+          "title": "Evidence",
+          "type": "array"
+        }
+      },
+      "required": [
+        "column",
+        "meaning",
+        "standard_name",
+        "evidence"
+      ],
+      "title": "ColumnMeaning",
+      "type": "object"
+    },
+    "EntityGroup": {
+      "additionalProperties": false,
+      "description": "FD 기반 엔터티 묶음 결과.",
+      "properties": {
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "columns": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Columns",
+          "type": "array"
+        },
+        "rationale": {
+          "title": "Rationale",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "minItems": 1,
+          "title": "Evidence",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "columns",
+        "rationale",
+        "evidence"
+      ],
+      "title": "EntityGroup",
+      "type": "object"
+    },
+    "Evidence": {
+      "additionalProperties": false,
+      "description": "판단의 근거 인용. LLM 산출 계약에서 없는 ID나 모순된 인용은 반려된다.",
+      "properties": {
+        "ref": {
+          "description": "산출물 ID. 예: 'ColumnProfile:phone'",
+          "title": "Ref",
+          "type": "string"
+        },
+        "reason": {
+          "description": "이 근거가 무엇을 뒷받침하는지",
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ref",
+        "reason"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "UserQuestion": {
+      "additionalProperties": false,
+      "description": "확신도가 낮을 때 만드는 사용자 질문. 비대화 모드에서는 답 없이 기본값 진행.",
+      "properties": {
+        "question": {
+          "title": "Question",
+          "type": "string"
+        },
+        "context": {
+          "description": "질문에 필요한 맥락 요약",
+          "title": "Context",
+          "type": "string"
+        },
+        "default_answer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "비대화 모드에서 쓸 기본 답",
+          "title": "Default Answer"
+        }
+      },
+      "required": [
+        "question",
+        "context"
+      ],
+      "title": "UserQuestion",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "S8 산출물: 의미 해석(LLM 담당).\n\n컬럼 의미, 엔터티 식별, 표준 영문 이름, 업무 도메인 추정. 모든 판단 항목에\nEvidence 인용이 필수다. 확신이 낮으면 사용자 질문을 만든다.",
+  "properties": {
+    "contract_version": {
+      "default": "0.1.0",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "business_domain": {
+      "description": "추정한 업무 도메인. 예: '전자상거래 주문'",
+      "title": "Business Domain",
+      "type": "string"
+    },
+    "column_meanings": {
+      "items": {
+        "$ref": "#/$defs/ColumnMeaning"
+      },
+      "minItems": 1,
+      "title": "Column Meanings",
+      "type": "array"
+    },
+    "entities": {
+      "items": {
+        "$ref": "#/$defs/EntityGroup"
+      },
+      "title": "Entities",
+      "type": "array"
+    },
+    "unresolved_columns": {
+      "description": "확정하지 못한 컬럼",
+      "items": {
+        "type": "string"
+      },
+      "title": "Unresolved Columns",
+      "type": "array"
+    },
+    "questions": {
+      "items": {
+        "$ref": "#/$defs/UserQuestion"
+      },
+      "title": "Questions",
+      "type": "array"
+    },
+    "evidence": {
+      "description": "도메인 추정 전체 근거",
+      "items": {
+        "$ref": "#/$defs/Evidence"
+      },
+      "minItems": 1,
+      "title": "Evidence",
+      "type": "array"
+    }
+  },
+  "required": [
+    "business_domain",
+    "column_meanings",
+    "evidence"
+  ],
+  "title": "SemanticModel",
+  "type": "object",
+  "$id": "https://autoetl.dev/schemas/semantic_model.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

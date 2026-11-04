@@ -1,0 +1,223 @@
+{
+  "$defs": {
+    "ColumnMapping": {
+      "additionalProperties": false,
+      "description": "원본 컬럼 → 대상 컬럼 변환 규칙 하나.",
+      "properties": {
+        "source_column": {
+          "title": "Source Column",
+          "type": "string"
+        },
+        "target_table": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Target Table",
+          "type": "string"
+        },
+        "target_column": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Target Column",
+          "type": "string"
+        },
+        "transform": {
+          "default": "identity",
+          "description": "변환식. 예: 'strip_comma', 'parse_yyyymmdd', 'identity'",
+          "title": "Transform",
+          "type": "string"
+        },
+        "type_cast": {
+          "description": "예: 'integer', 'decimal(12,2)', 'timestamptz'",
+          "title": "Type Cast",
+          "type": "string"
+        },
+        "null_handling": {
+          "$ref": "#/$defs/NullHandling"
+        },
+        "default_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Value"
+        }
+      },
+      "required": [
+        "source_column",
+        "target_table",
+        "target_column",
+        "type_cast",
+        "null_handling"
+      ],
+      "title": "ColumnMapping",
+      "type": "object"
+    },
+    "DeduplicationRule": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "keys": {
+          "description": "중복 판정 키. 켰을 때만 필수",
+          "items": {
+            "type": "string"
+          },
+          "title": "Keys",
+          "type": "array"
+        },
+        "keep": {
+          "default": "first",
+          "pattern": "^(first|last)$",
+          "title": "Keep",
+          "type": "string"
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "title": "DeduplicationRule",
+      "type": "object"
+    },
+    "ErrorHandling": {
+      "additionalProperties": false,
+      "properties": {
+        "quarantine_table": {
+          "default": "load_errors",
+          "description": "실패 행 격리 테이블",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Quarantine Table",
+          "type": "string"
+        },
+        "max_error_rate": {
+          "default": 0.01,
+          "description": "이 비율을 넘으면 적재 중단",
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Max Error Rate",
+          "type": "number"
+        }
+      },
+      "title": "ErrorHandling",
+      "type": "object"
+    },
+    "IncrementMode": {
+      "enum": [
+        "append",
+        "upsert",
+        "watermark"
+      ],
+      "title": "IncrementMode",
+      "type": "string"
+    },
+    "LoadOrder": {
+      "additionalProperties": false,
+      "description": "FK 의존 순서를 지키는 테이블 적재 순서.",
+      "properties": {
+        "table": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Table",
+          "type": "string"
+        },
+        "depends_on": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Depends On",
+          "type": "array"
+        }
+      },
+      "required": [
+        "table"
+      ],
+      "title": "LoadOrder",
+      "type": "object"
+    },
+    "NullHandling": {
+      "enum": [
+        "empty_string",
+        "null",
+        "default_value",
+        "reject_row"
+      ],
+      "title": "NullHandling",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "S13 산출물: 적재 플랜(코드 + LLM).\n\n매핑, 변환 규칙, 적재 순서, 증분 전략, 오류 행 격리를 정의한다. 내보내기는\nddl.sql, load_plan.yaml, 단독 실행 ETL 스크립트로 한다(P4).",
+  "properties": {
+    "contract_version": {
+      "default": "0.1.0",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "mappings": {
+      "items": {
+        "$ref": "#/$defs/ColumnMapping"
+      },
+      "minItems": 1,
+      "title": "Mappings",
+      "type": "array"
+    },
+    "load_order": {
+      "items": {
+        "$ref": "#/$defs/LoadOrder"
+      },
+      "minItems": 1,
+      "title": "Load Order",
+      "type": "array"
+    },
+    "deduplication": {
+      "$ref": "#/$defs/DeduplicationRule"
+    },
+    "increment": {
+      "$ref": "#/$defs/IncrementMode"
+    },
+    "upsert_keys": {
+      "description": "upsert일 때 필수",
+      "items": {
+        "type": "string"
+      },
+      "title": "Upsert Keys",
+      "type": "array"
+    },
+    "watermark_column": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "watermark일 때 필수. 예: 'updated_at'",
+      "title": "Watermark Column"
+    },
+    "error_handling": {
+      "$ref": "#/$defs/ErrorHandling"
+    },
+    "expected_row_count": {
+      "description": "정상 적재 시 기대 행 수(정상 행 기준 적재 성공률 판정용)",
+      "minimum": 0,
+      "title": "Expected Row Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "mappings",
+    "load_order",
+    "deduplication",
+    "increment",
+    "expected_row_count"
+  ],
+  "title": "LoadPlan",
+  "type": "object",
+  "$id": "https://autoetl.dev/schemas/load_plan.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

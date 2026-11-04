@@ -1,0 +1,116 @@
+{
+  "$defs": {
+    "SensitiveType": {
+      "description": "탐지 대상 민감 정보 종류. 체크섬 검증 가능한 종류는 결과에 반영한다.",
+      "enum": [
+        "resident_registration_number",
+        "foreigner_registration_number",
+        "business_registration_number",
+        "card_number",
+        "phone_number",
+        "email",
+        "bank_account",
+        "ip_address",
+        "name",
+        "address",
+        "date_of_birth"
+      ],
+      "title": "SensitiveType",
+      "type": "string"
+    },
+    "SensitivityAssignment": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "types": {
+          "items": {
+            "$ref": "#/$defs/SensitiveType"
+          },
+          "minItems": 1,
+          "title": "Types",
+          "type": "array"
+        },
+        "level": {
+          "$ref": "#/$defs/SensitivityLevel",
+          "description": "L0(운영) ~ L3(제한)"
+        },
+        "detector": {
+          "title": "Detector",
+          "type": "string"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "checksum_validated": {
+          "default": false,
+          "description": "주민번호·카드번호 등 체크섬 검증을 통과했는지",
+          "title": "Checksum Validated",
+          "type": "boolean"
+        },
+        "matched_rate": {
+          "description": "패턴 일치 값의 비율",
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Matched Rate",
+          "type": "number"
+        }
+      },
+      "required": [
+        "column",
+        "types",
+        "level",
+        "detector",
+        "confidence",
+        "matched_rate"
+      ],
+      "title": "SensitivityAssignment",
+      "type": "object"
+    },
+    "SensitivityLevel": {
+      "description": "민감도 등급. L3이 가장 제한적이다.",
+      "enum": [
+        "L0",
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "title": "SensitivityLevel",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "S7 산출물: 컬럼별 민감도 지도.\n\n민감도 등급은 LLM 라우팅, 외부 전송 범위, 로그 기록 수준을 결정하는 기본값이 된다.",
+  "properties": {
+    "contract_version": {
+      "default": "0.1.0",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "assignments": {
+      "description": "민감으로 판정된 컬럼만 담는다. 나머지는 L0",
+      "items": {
+        "$ref": "#/$defs/SensitivityAssignment"
+      },
+      "title": "Assignments",
+      "type": "array"
+    },
+    "notes": {
+      "description": "예: '카드번호 Luhn 실패 12건은 위조 가능성'",
+      "items": {
+        "type": "string"
+      },
+      "title": "Notes",
+      "type": "array"
+    }
+  },
+  "title": "SensitivityMap",
+  "type": "object",
+  "$id": "https://autoetl.dev/schemas/sensitivity_map.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -1,0 +1,102 @@
+{
+  "$defs": {
+    "AllowedSchemaOp": {
+      "description": "S9 후보 보정·S12 선택 수정에서 LLM이 쓸 수 있는 연산.",
+      "enum": [
+        "rename",
+        "change_type",
+        "split",
+        "merge",
+        "add_index"
+      ],
+      "title": "AllowedSchemaOp",
+      "type": "string"
+    },
+    "Purpose": {
+      "description": "업로드 때 고르는 용도. 후보 스키마 채점 가중치가 용도별로 다르다.",
+      "enum": [
+        "oltp",
+        "analytics",
+        "archive"
+      ],
+      "title": "Purpose",
+      "type": "string"
+    },
+    "SchemaModification": {
+      "additionalProperties": false,
+      "description": "S12 사용자·LLM 수정 한 건. 허용 연산만 쓸 수 있다.",
+      "properties": {
+        "op": {
+          "$ref": "#/$defs/AllowedSchemaOp"
+        },
+        "target": {
+          "description": "연산 대상. 예: 'customers.phone'",
+          "title": "Target",
+          "type": "string"
+        },
+        "args": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "연산별 인자",
+          "title": "Args",
+          "type": "object"
+        },
+        "reason": {
+          "default": "",
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "target"
+      ],
+      "title": "SchemaModification",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "S12 산출물: 사용자가 고른 후보와 수정. 수정 후 재검증을 거친다.",
+  "properties": {
+    "contract_version": {
+      "default": "0.1.0",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "candidate_id": {
+      "title": "Candidate Id",
+      "type": "string"
+    },
+    "purpose": {
+      "$ref": "#/$defs/Purpose"
+    },
+    "modifications": {
+      "items": {
+        "$ref": "#/$defs/SchemaModification"
+      },
+      "title": "Modifications",
+      "type": "array"
+    },
+    "revalidated": {
+      "description": "수정 반영 후 재검증 통과 여부",
+      "title": "Revalidated",
+      "type": "boolean"
+    },
+    "selection_basis": {
+      "default": "",
+      "description": "사용자가 남긴 선택 이유",
+      "title": "Selection Basis",
+      "type": "string"
+    }
+  },
+  "required": [
+    "candidate_id",
+    "purpose",
+    "revalidated"
+  ],
+  "title": "SelectedSchema",
+  "type": "object",
+  "$id": "https://autoetl.dev/schemas/selected_schema.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

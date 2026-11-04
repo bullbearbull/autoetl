@@ -1,0 +1,97 @@
+{
+  "$defs": {
+    "Evidence": {
+      "additionalProperties": false,
+      "description": "판단의 근거 인용. LLM 산출 계약에서 없는 ID나 모순된 인용은 반려된다.",
+      "properties": {
+        "ref": {
+          "description": "산출물 ID. 예: 'ColumnProfile:phone'",
+          "title": "Ref",
+          "type": "string"
+        },
+        "reason": {
+          "description": "이 근거가 무엇을 뒷받침하는지",
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ref",
+        "reason"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "RankedCandidate": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {
+          "title": "Candidate Id",
+          "type": "string"
+        },
+        "rank": {
+          "minimum": 0,
+          "title": "Rank",
+          "type": "integer"
+        },
+        "reasons": {
+          "description": "점수표 항목을 인용한 사유",
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "minItems": 1,
+          "title": "Reasons",
+          "type": "array"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "rank",
+        "reasons"
+      ],
+      "title": "RankedCandidate",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "S11 산출물: 권고(LLM 담당). 순위와 사유에 근거 ID 인용이 필수다.",
+  "properties": {
+    "contract_version": {
+      "default": "0.1.0",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "ranking": {
+      "items": {
+        "$ref": "#/$defs/RankedCandidate"
+      },
+      "minItems": 1,
+      "title": "Ranking",
+      "type": "array"
+    },
+    "recommended_id": {
+      "title": "Recommended Id",
+      "type": "string"
+    },
+    "tradeoffs": {
+      "description": "후보 간 장단점 요약",
+      "title": "Tradeoffs",
+      "type": "string"
+    },
+    "caution": {
+      "default": "",
+      "description": "선택 전 확인할 사항",
+      "title": "Caution",
+      "type": "string"
+    }
+  },
+  "required": [
+    "ranking",
+    "recommended_id",
+    "tradeoffs"
+  ],
+  "title": "Recommendation",
+  "type": "object",
+  "$id": "https://autoetl.dev/schemas/recommendation.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}
