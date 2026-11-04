@@ -1,0 +1,52 @@
+[project]
+name = "autoetl"
+description = "결정론 분석 엔진과 LLM 하네스로 CSV·엑셀을 분석해 PostgreSQL 스키마와 적재 플랜을 만드는 로컬 ETL 도구"
+requires-python = ">=3.10"
+dependencies = []
+dynamic = ["version"]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/autoetl"]
+
+[tool.hatch.version]
+path = "src/autoetl/__init__.py"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+# tools/board는 소유자가 검토 승인한 별도 도구고 docs는 소유자가 관리하는
+# 문서 사본이다. 둘 다 이 패키지의 린트·포맷 범위에서 뺀다.
+extend-exclude = ["tools/board", "docs"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle 오류
+    "W",   # pycodestyle 경고
+    "F",   # pyflakes
+    "I",   # import 정렬
+    "UP",  # pyupgrade
+    "B",   # 버그 가능성
+    "C4",  # comprehension 정리
+    "SIM", # 단순화
+    "RUF", # ruff 추천 규칙
+]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src", "tests", "tools/license_check.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
