@@ -312,6 +312,30 @@ def test_prompt_log_level_matches_value_rule() -> None:
         assert prompt_log_level((level,)) is log_level_for_value(level, masked=False)
 
 
+def test_prompt_log_level_secret_values_are_l3() -> None:
+    # 비밀값(데이터 컬럼 밖의 API 키·토큰) 표시: 다른 내용과 무관하게 로그 L3.
+    assert prompt_log_level(secret_value_present=True) is LogLevel.RESTRICTED
+    assert prompt_log_level((SensitivityLevel.L0,), secret_value_present=True) is (
+        LogLevel.RESTRICTED
+    )
+    assert prompt_log_level(masked_value_present=True, secret_value_present=True) is (
+        LogLevel.RESTRICTED
+    )
+
+
+def test_prompt_log_level_response_never_below_request() -> None:
+    # LLM 응답은 요청 프롬프트의 값을 되풀이할 수 있다: 응답 등급 ≥ 요청 등급.
+    assert prompt_log_level(at_least=LogLevel.CONFIDENTIAL) is LogLevel.CONFIDENTIAL
+    assert prompt_log_level((SensitivityLevel.L0,), at_least=LogLevel.RESTRICTED) is (
+        LogLevel.RESTRICTED
+    )
+    assert prompt_log_level(at_least=LogLevel.RESTRICTED) is LogLevel.RESTRICTED
+    # 하한은 올리기만 한다 — 내용이 더 민감하면 내용 등급이 이긴다.
+    assert prompt_log_level((SensitivityLevel.L3,), at_least=LogLevel.CONFIDENTIAL) is (
+        LogLevel.RESTRICTED
+    )
+
+
 # ── 문서 ↔ 코드 대조 ──────────────────────────────────────────────────────────
 
 
@@ -423,6 +447,10 @@ def test_doc_covers_trust_zone_and_prompt_rules() -> None:
         "fc00::/7",
         "실패 닫힘",
         "이 PC 또는 등록한 사내 서버의 모델",
+        "secret_value_present",
+        "비밀값",
+        "낮아질 수 없다",
+        "이 PC에서 도는 모델",
     ):
         assert token in POLICY_DOC, token
 

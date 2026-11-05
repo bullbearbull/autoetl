@@ -161,6 +161,8 @@ def prompt_log_level(
     raw_value_levels: Sequence[SensitivityLevel] = (),
     *,
     masked_value_present: bool = False,
+    secret_value_present: bool = False,
+    at_least: LogLevel | None = None,
 ) -> LogLevel:
     """프롬프트·응답 원문의 로그 등급: 담긴 값 가운데 가장 높은 등급을 따른다.
 
@@ -170,12 +172,23 @@ def prompt_log_level(
     - 데이터 L0·L1 원문만 담겼으면 로그 L2. 가림 처리한 값만 있어도 L2
       (log_level_for_value의 masked 규칙과 같다).
     - 셀 값 원문이 없이 메타데이터만 있으면 로그 L1.
+    - 비밀값(API 키·토큰 등 데이터 컬럼 밖의 값)이 담겼다는 표시만으로 로그 L3
+      (secret_value_present — 비밀 키는 정책 1.2절에서 로그 L3이다).
+    - at_least: 응답 판정에 쓰는 하한. LLM 응답은 받은 프롬프트의 값을 되풀이할
+      수 있어 응답의 등급은 요청 프롬프트의 등급보다 낮아질 수 없다. 요청
+      프롬프트의 등급을 넘기면 결과는 그 등급 아래로 내려가지 않는다.
     """
-    if raw_value_levels:
-        return max(log_level_for_value(level, masked=False) for level in raw_value_levels)
-    if masked_value_present:
-        return LogLevel.CONFIDENTIAL
-    return LogLevel.INTERNAL
+    if secret_value_present:
+        level = LogLevel.RESTRICTED
+    elif raw_value_levels:
+        level = max(log_level_for_value(value, masked=False) for value in raw_value_levels)
+    elif masked_value_present:
+        level = LogLevel.CONFIDENTIAL
+    else:
+        level = LogLevel.INTERNAL
+    if at_least is not None and at_least > level:
+        return at_least
+    return level
 
 
 SENSITIVE_TYPE_DEFAULT_LEVEL: Mapping[SensitiveType, SensitivityLevel] = MappingProxyType(
