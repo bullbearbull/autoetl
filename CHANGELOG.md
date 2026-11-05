@@ -7,6 +7,7 @@
 
 ### Added
 
+- 벤치 데이터셋 생성기 v0(`bench/generator/`): 합성 관계형 팩 2종, 시드 고정 생성, 리프→루트 조인 평면화, 잡음 변형 7종(결측·형식 혼재·앞자리 0·다중 헤더·CP949·hard), 정답 스키마·메니페스트 출력 (T-0008)
 - 데이터·로그 등급 정책 v0: 문서(`docs/policy/data-log-levels.md`)와 기계 판독형 정의(`src/autoetl/security/levels.py`), 카나리 테스트 설계, 정합성 테스트 (T-0007)
 - SOP v1 원본(`sop/v1.yaml`, S0~S14 단계·점검 항목·실패 시 행동·LLM 프롬프트)과 생성기(`tools/build_sop.py` → `docs/sop-v1.md`, `docs/prompts-v1.md`) (T-0006)
 - 단계별 계약 v0: S0~S14 산출물 15개의 Pydantic 모델과 JSON Schema 내보내기(`tools/export_contracts.py` → `schemas/`), 계약 버전 규칙 (T-0005)

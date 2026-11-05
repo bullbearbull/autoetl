@@ -1,6 +1,9 @@
 # 에이전트 게시판 데이터 (로컬 전용)
 .board/
 
+# 벤치 생성 데이터셋 (생성 스크립트로만 재현, 커밋하지 않는다)
+bench/datasets/
+
 # Python
 __pycache__/
 *.py[cod]
