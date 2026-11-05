@@ -38,15 +38,19 @@ def _f1(precision: float, recall: float) -> float:
 
 
 def type_f1(answer: BenchAnswer, prediction: BenchPrediction) -> float:
-    """컬럼 단위 물리 타입 일치 F1."""
+    """컬럼 단위 물리 타입 일치 F1.
+
+    정밀도·재현율 모두 '타입까지 맞은 컬럼'만 센다. 이름만 알고 타입을 틀린
+    컬럼은 정밀도를 깎는다.
+    """
     truth = _truth_columns(answer)
     predicted = _predicted_columns(prediction)
     if not truth:
         return 1.0
     matches = sum(1 for key, value in truth.items() if predicted.get(key) == value)
     recall = matches / len(truth)
-    known = sum(1 for key in predicted if key in truth)
-    precision = known / len(predicted) if predicted else 0.0
+    correct = sum(1 for key, value in predicted.items() if truth.get(key) == value)
+    precision = correct / len(predicted) if predicted else 0.0
     return _f1(precision, recall)
 
 
@@ -97,8 +101,31 @@ def foreign_key_f1(answer: BenchAnswer, prediction: BenchPrediction) -> float:
 
 
 def functional_dependency_recall(answer: BenchAnswer, prediction: BenchPrediction) -> float:
-    """FD 복원율: 정답 FD 중 예측이 찾은 비율. 식별은 (결정자 집합, 피결정자)."""
-    truth = {
+    """FD 복원율(PLAN 지표): 정답 FD 중 예측이 찾은 비율. 식별은 (결정자 집합, 피결정자)."""
+    truth = _truth_fds(answer)
+    predicted = _predicted_fds(prediction)
+    if not truth:
+        return 1.0
+    return len(truth & predicted) / len(truth)
+
+
+def functional_dependency_f1(answer: BenchAnswer, prediction: BenchPrediction) -> float:
+    """FD F1 — 재현율만 쓰면 모든 컬럼 쌍을 FD로 나열한 예측도 100%가 된다.
+
+    종합 점수에는 이 F1을 넣어 정밀도를 함께 잰다.
+    """
+    truth = _truth_fds(answer)
+    predicted = _predicted_fds(prediction)
+    if not truth:
+        return 1.0
+    hits = len(truth & predicted)
+    recall = hits / len(truth)
+    precision = hits / len(predicted) if predicted else 0.0
+    return _f1(precision, recall)
+
+
+def _truth_fds(answer: BenchAnswer) -> set[tuple[frozenset[str], str]]:
+    return {
         (
             frozenset(_flat(fd.table, column) for column in fd.determinant),
             _flat(fd.table, fd.dependent),
@@ -106,14 +133,14 @@ def functional_dependency_recall(answer: BenchAnswer, prediction: BenchPredictio
         for table in answer.tables
         for fd in table.functional_dependencies
     }
-    predicted = {
+
+
+def _predicted_fds(prediction: BenchPrediction) -> set[tuple[frozenset[str], str]]:
+    return {
         (frozenset(fd.determinant), fd.dependent)
         for table in prediction.tables
         for fd in table.functional_dependencies
     }
-    if not truth:
-        return 1.0
-    return len(truth & predicted) / len(truth)
 
 
 def adjusted_rand_index(answer: BenchAnswer, prediction: BenchPrediction) -> float:
@@ -135,6 +162,9 @@ def adjusted_rand_index(answer: BenchAnswer, prediction: BenchPrediction) -> flo
     if not common:
         return 0.0
     n = len(common)
+    if n < 2:
+        # 겹치는 컬럼이 1개면 배정 비교 정보가 없다(자명하게 일치로 본다).
+        return 1.0
     contingency: dict[tuple[str, int], int] = {}
     truth_totals: dict[str, int] = {}
     predicted_totals: dict[int, int] = {}
@@ -165,14 +195,15 @@ def table_count_error(answer: BenchAnswer, prediction: BenchPrediction) -> int:
 def schema_recovery_score(answer: BenchAnswer, prediction: BenchPrediction) -> float:
     """스키마 복원 종합 점수(0~100).
 
-    다섯 지표(타입 F1·PK F1·FK F1·FD 복원율·ARI)의 균등 가중 평균이다.
-    가중치 변경은 소유자 검토 대상이다.
+    다섯 지표(타입 F1·PK F1·FK F1·FD F1·ARI)의 균등 가중 평균이다.
+    FD는 PLAN 지표(복원율) 외에 스팸 예측 방지를 위해 F1을 쓴다.
+    가중치 변경은 소유자 검토 대상이다(후속 T-0012 A/B 검증).
     """
     metrics = (
         type_f1(answer, prediction),
         primary_key_f1(answer, prediction),
         foreign_key_f1(answer, prediction),
-        functional_dependency_recall(answer, prediction),
+        functional_dependency_f1(answer, prediction),
         max(adjusted_rand_index(answer, prediction), 0.0),
     )
     return 100.0 * sum(metrics) / len(metrics)

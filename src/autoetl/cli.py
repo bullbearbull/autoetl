@@ -11,6 +11,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from autoetl.contracts import Purpose, Report
 from autoetl.core.pipeline import run_pipeline
 
@@ -47,15 +49,30 @@ def main(argv: list[str] | None = None) -> int:
     if not args.file.exists():
         print(f"입력 파일이 없다: {args.file}", file=sys.stderr)
         return 2
+    if args.out is not None and args.out.resolve() == args.file.resolve():
+        print("--out이 입력 파일과 같은 경로다. 원본을 덮어쓰지 않는다.", file=sys.stderr)
+        return 2
 
     try:
         result = run_pipeline(args.file, purpose=Purpose(args.purpose))
-    except (ValueError, UnicodeDecodeError) as exc:
-        print(f"분석 실패: {exc}", file=sys.stderr)
+    except UnicodeDecodeError:
+        # 예외 원문(값이 포함된 메시지)은 내보내지 않는다(금지 패턴 6).
         print(
-            "v0은 UTF-8 CSV만 지원한다. 다른 인코딩·형식은 P1(결정론 엔진)에서 지원한다.",
+            "입력 파일을 UTF-8 텍스트로 읽을 수 없다. "
+            "다른 인코딩·형식 지원은 P1(결정론 엔진)에서 추가된다.",
             file=sys.stderr,
         )
+        return 1
+    except ValidationError:
+        print(
+            "파이프라인 산출물이 계약을 통과하지 못했다(내부 오류). "
+            "입력 파일과 명령을 이슈로 알려달라.",
+            file=sys.stderr,
+        )
+        return 3
+    except ValueError as exc:
+        # 파이프라인이 직접 던진 안내성 오류(예: 빈 CSV)만 담는다.
+        print(f"입력을 처리할 수 없다: {exc}", file=sys.stderr)
         return 1
     report: Report = result.report
     payload = report.model_dump_json(indent=2)

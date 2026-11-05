@@ -65,22 +65,43 @@ STUB_NOTE = "v0 빈 구현"
 
 
 def _read_csv(path: Path) -> tuple[list[str], int, int]:
-    """UTF-8 CSV의 헤더·데이터 행 수·크기를 읽는 최소 S0 입력 파서."""
-    with path.open(encoding="utf-8", newline="") as handle:
-        rows = list(csv.reader(handle))
-    if not rows:
-        raise ValueError(f"빈 CSV: {path}")
-    header = [name.strip() or f"col_{i + 1}" for i, name in enumerate(rows[0])]
-    return header, max(len(rows) - 1, 0), path.stat().st_size
+    """UTF-8 CSV의 헤더·데이터 행 수·크기를 읽는 최소 S0 입력 파서.
+
+    utf-8-sig로 읽어 엑셀이 붙이는 BOM을 떼어 낸다(BOM이 없으면 그대로).
+    행 수는 스트리밍으로 세어 전체 파일을 메모리에 올리지 않는다.
+    """
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        reader = csv.reader(handle)
+        first = next(reader, None)
+        if first is None:
+            raise ValueError(f"빈 CSV: {path}")
+        header = [name.strip() or f"col_{i + 1}" for i, name in enumerate(first)]
+        row_count = sum(1 for _ in reader)
+    return header, row_count, path.stat().st_size
 
 
-def _sanitize(name: str) -> str:
-    """컬럼 이름을 표준 영문 규칙(^[a-z][a-z0-9_]*$)에 맞춘 최소 변환."""
-    cleaned = "".join(ch if ch.isalnum() else "_" for ch in name.lower())
-    cleaned = cleaned.strip("_") or "col"
-    if not cleaned[0].isalpha():
-        cleaned = f"c_{cleaned}"
-    return cleaned
+def _sanitize_names(header: list[str]) -> dict[str, str]:
+    """원본 컬럼 이름 → 표준 영문 이름(^[a-z][a-z0-9_]*$) 매핑.
+
+    ASCII가 아닌 글자(한글 헤더 등)는 버리고, 비면 col_N으로 채운다.
+    충돌(예: 'foo-bar'와 'foo bar')은 숫자 접미로 유일하게 만든다.
+    """
+    mapping: dict[str, str] = {}
+    taken: set[str] = set()
+    for index, name in enumerate(header):
+        cleaned = "".join(ch if ch.isascii() and ch.isalnum() else "_" for ch in name.lower())
+        parts = [part for part in cleaned.split("_") if part]
+        base = "_".join(parts)
+        if not base or not base[0].isalpha():
+            base = f"col_{index + 1}"
+        candidate = base
+        suffix = 2
+        while candidate in taken:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        taken.add(candidate)
+        mapping[name] = candidate
+    return mapping
 
 
 @dataclass(frozen=True)
@@ -111,6 +132,7 @@ def run_pipeline(
 ) -> PipelineResult:
     """S0~S14를 빈 구현으로 실행한다. LLM은 쓰지 않는다(--no-llm 전용)."""
     header, row_count, size_bytes = _read_csv(input_path)
+    safe = _sanitize_names(header)
     file_name = input_path.name
 
     # S0 수집·정규화 — 실제 헤더와 행 수만 반영한다.
@@ -186,7 +208,7 @@ def run_pipeline(
             ColumnMeaning(
                 column=header[0],
                 meaning=f"{STUB_NOTE}: 미확정",
-                standard_name=_sanitize(header[0]),
+                standard_name=safe[header[0]],
                 evidence=[Evidence(ref="IngestManifest:columns", reason=STUB_NOTE)],
             )
         ],
@@ -199,7 +221,7 @@ def run_pipeline(
         name="wide_table",
         columns=[
             TargetColumn(
-                name=_sanitize(name),
+                name=safe[name],
                 physical_type=PhysicalType.STRING,
                 source_columns=[name],
                 nullable=True,
@@ -270,7 +292,7 @@ def run_pipeline(
             ColumnMapping(
                 source_column=name,
                 target_table="wide_table",
-                target_column=_sanitize(name),
+                target_column=safe[name],
                 type_cast="text",
                 null_handling=NullHandling.NULL,
             )
