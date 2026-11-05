@@ -24,6 +24,7 @@ from bench.criteria import (
 from bench.scoring import (
     adjusted_rand_index,
     foreign_key_f1,
+    functional_dependency_f1,
     functional_dependency_recall,
     primary_key_f1,
     schema_recovery_score,
@@ -139,8 +140,33 @@ def test_one_wrong_type_drops_type_f1() -> None:
         for column in table.columns:
             if column.name == "a_a_amt":
                 column.physical_type = PhysicalType.INTEGER
-    # 정밀도 1.0(모두 아는 컬럼), 재현율 4/5 → F1 = 2*1*0.8/1.8
-    assert type_f1(answer, prediction) == pytest.approx(2 * 0.8 / 1.8)
+    # 정밀도 4/5, 재현율 4/5 → F1 = 0.8 (이름만 아는 컬럼은 정밀도에 못 들어간다)
+    assert type_f1(answer, prediction) == pytest.approx(0.8)
+
+
+def test_spam_fds_keep_recall_but_lose_f1() -> None:
+    answer = demo_answer()
+    prediction = perfect_prediction(answer)
+    spam = AnswerFunctionalDependency(table="", determinant=["a_a_name"], dependent="a_a_amt")
+    prediction.tables[0].functional_dependencies.append(spam)
+    assert functional_dependency_recall(answer, prediction) == pytest.approx(1.0)
+    assert functional_dependency_f1(answer, prediction) == pytest.approx(
+        2 * (3 / 4) * 1.0 / (3 / 4 + 1.0)
+    )
+
+
+def test_ari_single_common_column_is_trivial() -> None:
+    answer = demo_answer()
+    partial = BenchPrediction(
+        tables=[
+            PredictedTable(
+                columns=[PredictedColumn(name="a_a_id", physical_type=PhysicalType.STRING)],
+                primary_key=["a_a_id"],
+            )
+        ]
+    )
+    # 겹치는 컬럼 1개: 분모 0 없이 자명 일치로 본다.
+    assert adjusted_rand_index(answer, partial) == 1.0
 
 
 def test_missing_table_lowers_ari_and_pk() -> None:
@@ -242,8 +268,33 @@ def test_classify_models_gate_failure_excludes() -> None:
         run("clean", 8, 80),
     ]
     result = classify_models(runs)
-    assert result.minimum_model == "clean"
-    assert result.recommended_model == "clean"
+    # 기준선은 전체 최고 점수(leaky 99). clean 80은 99*0.85=84.15에 못 미쳐 판정 보류.
+    assert result.best_score == 99.0
+    assert result.minimum_model is None
+    assert result.recommended_model is None
+    assert "전체 최고 점수" in result.reason
+
+
+def test_classify_models_baseline_all_models() -> None:
+    # 관문 통과 모델만 있을 때 기준선은 그중 최고 점수와 같다.
+    runs = [
+        run("big", 70, 90, cost=10.0),
+        run("mid", 8, 77, cost=2.0),  # 90*0.85=76.5 이상
+    ]
+    result = classify_models(runs)
+    assert result.minimum_model == "mid"
+    assert result.recommended_model == "big"
+
+
+def test_classify_models_rejects_zero_cost() -> None:
+    with pytest.raises(ValidationError):
+        run("free", 8, 90, cost=0.0)
+
+
+def test_classify_models_empty_runs() -> None:
+    result = classify_models([])
+    assert result.minimum_model is None
+    assert result.best_score == 0.0
 
 
 def test_classify_models_no_qualifier() -> None:

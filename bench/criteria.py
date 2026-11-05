@@ -44,8 +44,9 @@ class RunMetrics(ContractModel):
     json_compliance: float = Field(ge=0, le=1)
     relative_cost: float = Field(
         default=1.0,
-        ge=0,
-        description="비용·자원 상대 지표(작을수록 좋다. 기준 모델=1.0)",
+        gt=0,
+        description="비용·자원 상대 지표(작을수록 좋다. 기준 모델=1.0). "
+        "0은 허용하지 않는다(효율 나눗셈 정의를 위해)",
     )
 
 
@@ -99,20 +100,29 @@ class ModelClassification(ContractModel):
 def classify_models(runs: list[RunMetrics]) -> ModelClassification:
     """최소·권장 모델을 판정한다.
 
-    - 후보는 필수 관문을 통과한 모델만.
-    - 최소: best_score x 0.85 이상인 후보 중 파라미터가 가장 작은 것.
-    - 권장: best_score x 0.95 이상인 후보 중 점수/비용 지표가 가장 높은 것.
-    - 관문을 통과한 모델이 없으면 둘 다 None(판정 보류).
+    - 기준선(best_score)은 전체 모델 가운데 최고 점수로 잡는다. 관문을 통과하지
+      못한 프런티어 모델이 최고점이라면 그 점수가 기준선이 된다(PLAN의 '최고 모델
+      점수의 85% 이상' 해석). 후보(판정 대상)는 관문을 통과한 모델만이다.
+    - 최소: 기준선 x 0.85 이상인 후보 중 파라미터가 가장 작은 것.
+    - 권장: 기준선 x 0.95 이상인 후보 중 점수/비용 지표가 가장 높은 것.
+    - 관문을 통과한 모델이 없거나 기준선에 닿는 후보가 없으면 None(판정 보류).
     """
+    if not runs:
+        return ModelClassification(
+            minimum_model=None,
+            recommended_model=None,
+            best_score=0.0,
+            reason="실행 결과가 없다",
+        )
+    best_score = max(run.score for run in runs)
     qualified = [run for run in runs if check_gates(run).passed]
     if not qualified:
         return ModelClassification(
             minimum_model=None,
             recommended_model=None,
-            best_score=max((run.score for run in runs), default=0.0),
+            best_score=best_score,
             reason="필수 관문을 통과한 모델이 없다",
         )
-    best_score = max(run.score for run in qualified)
     minimum_candidates = [run for run in qualified if run.score >= best_score * MINIMUM_MODEL_RATIO]
     minimum = (
         min(minimum_candidates, key=lambda run: run.parameters_b) if minimum_candidates else None
@@ -126,7 +136,7 @@ def classify_models(runs: list[RunMetrics]) -> ModelClassification:
         else None
     )
     reason = (
-        f"통과 {len(qualified)}/{len(runs)}모델, 최고 점수 {best_score:.1f}. "
+        f"통과 {len(qualified)}/{len(runs)}모델, 전체 최고 점수(기준선) {best_score:.1f}. "
         f"최소 기준선 {best_score * MINIMUM_MODEL_RATIO:.1f}점, "
         f"권장 기준선 {best_score * RECOMMENDED_MODEL_RATIO:.1f}점."
     )

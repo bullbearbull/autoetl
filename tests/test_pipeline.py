@@ -125,3 +125,34 @@ def test_pipeline_rejects_empty_csv(tmp_path: Path) -> None:
     empty.write_text("", encoding="utf-8")
     with pytest.raises(ValueError, match="빈 CSV"):
         run_pipeline(empty)
+
+
+def test_pipeline_handles_korean_headers(tmp_path: Path) -> None:
+    # 한글 헤더는 ASCII 표준 이름으로 변환되어야 계약(^[a-z][a-z0-9_]*$)을 통과한다.
+    csv_path = tmp_path / "korean.csv"
+    csv_path.write_text("고객명,주문금액\n홍길동,1000\n", encoding="utf-8")
+    result = run_pipeline(csv_path)
+    standard_names = [meaning.standard_name for meaning in result.semantic.column_meanings]
+    target_names = [column.name for column in result.candidates[0].tables[0].columns]
+    assert all(name[0].isascii() for name in standard_names + target_names)
+    assert len(target_names) == len(set(target_names)), "정규화 이름은 유일해야 한다"
+
+
+def test_pipeline_uniquifies_colliding_names(tmp_path: Path) -> None:
+    csv_path = tmp_path / "collide.csv"
+    csv_path.write_text("foo-bar,foo bar\n1,2\n", encoding="utf-8")
+    result = run_pipeline(csv_path)
+    target_names = [column.name for column in result.candidates[0].tables[0].columns]
+    assert target_names == ["foo_bar", "foo_bar_2"]
+
+
+def test_pipeline_strips_utf8_bom(tmp_path: Path) -> None:
+    csv_path = tmp_path / "bom.csv"
+    csv_path.write_text("customer_id,amount\n1,100\n", encoding="utf-8-sig")
+    result = run_pipeline(csv_path)
+    assert result.ingest.columns[0].name == "customer_id"
+    assert result.load_plan.mappings[0].source_column == "customer_id"
+
+
+def test_cli_refuses_overwriting_input(bench_csv: Path) -> None:
+    assert cli_main(["analyze", str(bench_csv), "--no-llm", "--out", str(bench_csv)]) == 2
