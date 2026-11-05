@@ -8,9 +8,8 @@ from pathlib import Path
 import pytest
 from bench.answer import ANSWER_VERSION, BenchAnswer
 from bench.generator import PACKS, build_dataset, flat_layout, flatten, generate_pack
-from bench.generator.emit import FlatColumn
 from bench.generator.noise import GROUP_LABELS, NULL_TOKENS, VARIANTS, apply_noise
-from bench.generator.packs import ColumnSpec, Pack, TableSpec
+from bench.generator.packs import ColumnSpec, FlatColumn, Pack, TableSpec
 
 EXPECTED_COLUMNS = {"orders_kr": 19, "music": 13}
 """조인 키를 한 번만 내보낼 때의 평면 컬럼 수(catalog_no 추가 기준)."""
