@@ -40,8 +40,9 @@ uv run ruff format --check .
 uv run mypy             # type checking (strict)
 ```
 
-CI runs the same checks plus a dependency-license check on Windows, macOS, and Linux ×
-Python 3.10–3.13. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute and
+CI runs the same checks plus a dependency-license check on Windows and Linux ×
+Python 3.10–3.13. (macOS checks are on hold for cost reasons — owner decision,
+2026-11-06. macOS support in code is unchanged.) See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute and
 [AGENTS.md](AGENTS.md) for the rules AI coding agents follow in this repository.
 
 ## License

@@ -36,7 +36,8 @@ uv run ruff format --check .
 uv run mypy             # 타입 검사(strict)
 ```
 
-CI는 Windows·macOS·Linux × Python 3.10~3.13에서 같은 검사와 의존성 라이선스 검사를 돌린다.
+CI는 Windows·Linux × Python 3.10~3.13에서 같은 검사와 의존성 라이선스 검사를 돌린다.
+(macOS 검사는 비용 문제로 보류 중 — 2026-11-06 소유자 결정. 코드의 macOS 지원은 그대로다.)
 기여 방법은 [CONTRIBUTING.md](CONTRIBUTING.md), AI 코딩 도구의 작업 규칙은 [AGENTS.md](AGENTS.md)에 있다.
 
 ## 라이선스

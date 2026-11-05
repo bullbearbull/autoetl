@@ -33,7 +33,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # macOS 보류(비용, 2026-11-06 소유자 결정) — macOS 러너는 Linux의 약 10배
+        # 요금이라 비공개 저장소 CI 비용의 대부분을 차지한다. 공개하거나 소유자가
+        # 다시 켜라고 하면 os 목록에 macos-latest를 되돌린다.
+        os: [ubuntu-latest, windows-latest]
         python: ["3.10", "3.11", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
     steps:
