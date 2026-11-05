@@ -11,10 +11,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from pydantic import ValidationError
-
 from autoetl.contracts import Purpose, Report
-from autoetl.core.pipeline import run_pipeline
+from autoetl.core.pipeline import InputError, run_pipeline
 
 
 def _targets_same_file(out: Path, source: Path) -> bool:
@@ -75,20 +73,22 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    except ValidationError:
-        # 실제 데이터 값은 공개 이슈 트래커로 보내지 않는다(정책 1.2절 — 데이터
-        # L2·L3 원문은 저장소 밖으로 나갈 수 없다). 요청하는 건 로그 L0·L1 정보만.
+    except InputError as exc:
+        # 입력 문제만 안내 메시지를 낸다(메시지에 셀 값이 없음이 보장된다).
+        print(f"입력을 처리할 수 없다: {exc}", file=sys.stderr)
+        return 1
+    except Exception:
+        # 그 밖의 예외(ValidationError 포함)는 원문을 내보내지 않고 고정 문구만
+        # 낸다. 이후 단계가 값을 담은 ValueError를 던져도 새어 나갈 수 없다
+        # (금지 패턴 1·6). 실제 데이터 값은 공개 이슈 트래커로 보내지 않는다
+        # (정책 1.2절 — 데이터 L2·L3 원문은 저장소 밖으로 나갈 수 없다).
         print(
-            "파이프라인 산출물이 계약을 통과하지 못했다(내부 오류). "
+            "파이프라인이 내부 오류로 끝났다(상세 원문은 표시하지 않는다). "
             "이슈에는 실제 데이터 파일을 첨부하지 말고 실행 명령·autoetl 버전·"
             "컬럼 수·헤더 형태(이름 형태만)를 알려달라.",
             file=sys.stderr,
         )
         return 3
-    except ValueError as exc:
-        # 파이프라인이 직접 던진 안내성 오류(예: 빈 CSV)만 담는다.
-        print(f"입력을 처리할 수 없다: {exc}", file=sys.stderr)
-        return 1
     report: Report = result.report
     payload = report.model_dump_json(indent=2)
     if args.out is not None:

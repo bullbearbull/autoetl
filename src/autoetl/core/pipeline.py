@@ -64,6 +64,14 @@ SOP_VERSION = "v1"
 STUB_NOTE = "v0 빈 구현"
 
 
+class InputError(ValueError):
+    """입력 파일 자체의 문제(빈 CSV, CSV 구문 오류).
+
+    안내 메시지에는 셀 값을 담지 않는다(정책 1.2절·금지 패턴 1·6). 경로·행
+    번호·컬럼 이름은 로그 L1 이하라 포함해도 된다.
+    """
+
+
 def _read_csv(path: Path) -> tuple[list[str], int, int]:
     """UTF-8 CSV의 헤더·데이터 행 수·크기를 읽는 최소 S0 입력 파서.
 
@@ -72,11 +80,20 @@ def _read_csv(path: Path) -> tuple[list[str], int, int]:
     """
     with path.open(encoding="utf-8-sig", newline="") as handle:
         reader = csv.reader(handle)
-        first = next(reader, None)
-        if first is None:
-            raise ValueError(f"빈 CSV: {path}")
-        header = [name.strip() or f"col_{i + 1}" for i, name in enumerate(first)]
-        row_count = sum(1 for _ in reader)
+        try:
+            first = next(reader, None)
+            if first is None:
+                raise InputError(f"빈 CSV: {path}")
+            header = [name.strip() or f"col_{i + 1}" for i, name in enumerate(first)]
+            row_count = sum(1 for _ in reader)
+        except csv.Error as exc:
+            # 셀 하나가 131072자를 넘거나(NUL 바이트 등) CSV 구문을 못 쓰는 경우.
+            # 원문 예외 메시지에 셀 내용이 섞일 수 있으므로 종류와 위치만 안내한다.
+            raise InputError(
+                f"입력 CSV를 끝까지 읽지 못했다({path}). 마지막으로 읽은 행 번호 "
+                f"{reader.line_num}. 이유: {type(exc).__name__} — 셀 하나가 너무 크거나"
+                "(csv 필드 한도 131072자) 허용되지 않는 바이트가 들어 있다."
+            ) from exc
     return header, row_count, path.stat().st_size
 
 
