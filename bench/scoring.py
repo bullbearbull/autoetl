@@ -10,6 +10,8 @@ docs/PLAN.md 벤치 지표 표의 스키마 복원 영역을 다룬다: 타입 F
 
 from __future__ import annotations
 
+from collections.abc import Sized
+
 from bench.answer import BenchAnswer, BenchPrediction
 
 
@@ -37,6 +39,17 @@ def _f1(precision: float, recall: float) -> float:
     return 2 * precision * recall / (precision + recall) if precision + recall else 0.0
 
 
+def _perfect_if_empty(truth: Sized, predicted: Sized) -> bool | None:
+    """정답·예측이 모두 비어 있으면 만점, 정답만 비었으면 0점.
+
+    정답이 비었는데 예측을 늘어놓으면 관련 지표가 1.0이 되는 스팸 관용을 막는다.
+    반환 None은 정답이 비어 있지 않아 usual 계산으로 넘어가야 한다는 뜻이다.
+    """
+    if not truth:
+        return not predicted
+    return None
+
+
 def type_f1(answer: BenchAnswer, prediction: BenchPrediction) -> float:
     """컬럼 단위 물리 타입 일치 F1.
 
@@ -45,8 +58,9 @@ def type_f1(answer: BenchAnswer, prediction: BenchPrediction) -> float:
     """
     truth = _truth_columns(answer)
     predicted = _predicted_columns(prediction)
-    if not truth:
-        return 1.0
+    empty = _perfect_if_empty(truth, predicted)
+    if empty is not None:
+        return 1.0 if empty else 0.0
     matches = sum(1 for key, value in truth.items() if predicted.get(key) == value)
     recall = matches / len(truth)
     correct = sum(1 for key, value in predicted.items() if truth.get(key) == value)
@@ -65,8 +79,9 @@ def primary_key_f1(answer: BenchAnswer, prediction: BenchPrediction) -> float:
     """PK 집합 일치 F1. 컬럼 집합이 같으면 같은 PK로 본다."""
     truth = _truth_pk_sets(answer)
     predicted = [frozenset(table.primary_key) for table in prediction.tables if table.primary_key]
-    if not truth:
-        return 1.0
+    empty = _perfect_if_empty(truth, predicted)
+    if empty is not None:
+        return 1.0 if empty else 0.0
     truth_set, predicted_set = set(truth), set(predicted)
     recall = len(truth_set & predicted_set) / len(truth_set)
     precision = len(truth_set & predicted_set) / len(predicted_set) if predicted_set else 0.0
@@ -92,8 +107,9 @@ def foreign_key_f1(answer: BenchAnswer, prediction: BenchPrediction) -> float:
         for table in prediction.tables
         for fk in table.foreign_keys
     }
-    if not truth:
-        return 1.0
+    empty = _perfect_if_empty(truth, predicted)
+    if empty is not None:
+        return 1.0 if empty else 0.0
     hits = len(truth & predicted)
     recall = hits / len(truth)
     precision = hits / len(predicted) if predicted else 0.0
@@ -104,8 +120,9 @@ def functional_dependency_recall(answer: BenchAnswer, prediction: BenchPredictio
     """FD 복원율(PLAN 지표): 정답 FD 중 예측이 찾은 비율. 식별은 (결정자 집합, 피결정자)."""
     truth = _truth_fds(answer)
     predicted = _predicted_fds(prediction)
-    if not truth:
-        return 1.0
+    empty = _perfect_if_empty(truth, predicted)
+    if empty is not None:
+        return 1.0 if empty else 0.0
     return len(truth & predicted) / len(truth)
 
 
@@ -116,8 +133,9 @@ def functional_dependency_f1(answer: BenchAnswer, prediction: BenchPrediction) -
     """
     truth = _truth_fds(answer)
     predicted = _predicted_fds(prediction)
-    if not truth:
-        return 1.0
+    empty = _perfect_if_empty(truth, predicted)
+    if empty is not None:
+        return 1.0 if empty else 0.0
     hits = len(truth & predicted)
     recall = hits / len(truth)
     precision = hits / len(predicted) if predicted else 0.0
@@ -148,6 +166,11 @@ def adjusted_rand_index(answer: BenchAnswer, prediction: BenchPrediction) -> flo
 
     정답 배정은 평면 이름 → 정답 테이블, 예측 배정은 평면 이름 → 예측 테이블
     인덱스로 두고 표준 ARI 식으로 계산한다.
+
+    최종값은 겹침 비율(겹친 컬럼 수 / 정답 컬럼 수)을 곱한다. 겹친 컬럼만으로
+    ARI를 재면 컬럼 1개만 예측해도 만점이 나와, 예측을 늘릴수록 점수가 내려가는
+    구간이 생긴다. 정답에 없는 예측 전용 컬럼(환각)은 여기서 벌점하지 않는다
+    — 타입·PK 정밀도가 이미 깎는다.
     """
     truth_assignment = {
         _flat(table.name, column.name): table.name
@@ -162,9 +185,11 @@ def adjusted_rand_index(answer: BenchAnswer, prediction: BenchPrediction) -> flo
     if not common:
         return 0.0
     n = len(common)
+    coverage = n / len(truth_assignment)
     if n < 2:
-        # 겹치는 컬럼이 1개면 배정 비교 정보가 없다(자명하게 일치로 본다).
-        return 1.0
+        # 겹치는 컬럼이 1개면 배정 비교 정보가 없어 자명 일치(1.0)로 두되,
+        # 커버리지 곱으로 예측을 안 한 나머지 컬럼만큼 깎인다.
+        return coverage
     contingency: dict[tuple[str, int], int] = {}
     truth_totals: dict[str, int] = {}
     predicted_totals: dict[int, int] = {}
@@ -183,8 +208,8 @@ def adjusted_rand_index(answer: BenchAnswer, prediction: BenchPrediction) -> flo
     expected = a_comb * b_comb / c2(n)
     maximum = (a_comb + b_comb) / 2
     if maximum == expected:
-        return 1.0
-    return (sum_comb - expected) / (maximum - expected)
+        return coverage
+    return (sum_comb - expected) / (maximum - expected) * coverage
 
 
 def table_count_error(answer: BenchAnswer, prediction: BenchPrediction) -> int:
