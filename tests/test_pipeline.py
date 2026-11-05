@@ -12,7 +12,7 @@ from bench.generator import PACKS, build_dataset
 
 from autoetl.cli import main as cli_main
 from autoetl.contracts import ARTIFACTS, Report, ReportSectionId
-from autoetl.core.pipeline import SOP_VERSION, run_pipeline
+from autoetl.core.pipeline import SOP_VERSION, InputError, run_pipeline
 
 
 @pytest.fixture(scope="module")
@@ -124,8 +124,38 @@ def test_cli_fails_cleanly_on_cp949(bench_dir: Path) -> None:
 def test_pipeline_rejects_empty_csv(tmp_path: Path) -> None:
     empty = tmp_path / "empty.csv"
     empty.write_text("", encoding="utf-8")
-    with pytest.raises(ValueError, match="빈 CSV"):
+    with pytest.raises(InputError, match="빈 CSV"):
         run_pipeline(empty)
+
+
+def test_cli_fails_cleanly_on_oversized_cell(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # csv 필드 한도(131072자)를 넘는 셀: 안내 문구와 함께 종료 1, 셀 값은 새지 않는다.
+    secret = "비밀마커값" + "x" * 200_000
+    csv_path = tmp_path / "huge.csv"
+    csv_path.write_text(f"a,b\n1,{secret}\n", encoding="utf-8")
+    code = cli_main(["analyze", str(csv_path), "--no-llm"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "읽지 못했다" in captured.err
+    assert "Traceback" not in captured.err
+    assert "비밀마커값" not in captured.err
+
+
+def test_cli_hides_value_bearing_internal_errors(
+    bench_csv: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 이후 단계가 값을 담은 ValueError를 던져도 고정 문구만 나가고 종료 3이다.
+    def explode(path: Path, *, purpose: object = None) -> None:
+        raise ValueError(f"내부 값 노출: 고객A 010-1234-5678 {path}")
+
+    monkeypatch.setattr("autoetl.cli.run_pipeline", explode)
+    code = cli_main(["analyze", str(bench_csv), "--no-llm"])
+    captured = capsys.readouterr()
+    assert code == 3
+    assert "내부 오류" in captured.err
+    assert "010-1234-5678" not in captured.err
 
 
 def test_pipeline_handles_korean_headers(tmp_path: Path) -> None:
