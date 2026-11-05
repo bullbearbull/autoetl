@@ -54,7 +54,8 @@ def build_dataset(pack: Pack, seed: int, out_dir: Path) -> dict[str, Any]:
         }
         files.append(file_entry)
 
-    write_json(out_dir / "answer.json", answer_schema(pack, tables))
+    answer = answer_schema(pack, tables)
+    write_json(out_dir / "answer.json", answer.model_dump(mode="json"))
     manifest: dict[str, Any] = {
         "generator": "bench.generator v0",
         "pack": pack.name,
@@ -63,7 +64,8 @@ def build_dataset(pack: Pack, seed: int, out_dir: Path) -> dict[str, Any]:
         "seed": seed,
         "columns": len(header),
         "files": files,
-        "note": "answer.json 형식의 정식화(채점 기준)는 T-0009에서 다룬다.",
+        "answer_version": answer.answer_version,
+        "note": "answer.json 형식은 bench/answer.py, 채점은 bench/scoring.py를 따른다.",
     }
     readme = (
         f"# 벤치 데이터셋: {pack.name} (seed {seed})\n\n"

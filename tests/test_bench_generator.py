@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import csv
-import json
 from pathlib import Path
 
 import pytest
+from bench.answer import BenchAnswer
 from bench.generator import PACKS, build_dataset, flatten, generate_pack
 from bench.generator.noise import VARIANTS, apply_noise
 
@@ -125,13 +125,10 @@ def test_build_dataset_writes_complete_artifacts(pack_name: str, tmp_path: Path)
     hard = _read_csv(out_dir / "hard.csv", encoding="cp949")
     assert len(hard) - 2 == len(clean) - 1, "hard는 헤더가 2행(다중 헤더)이다"
 
-    answer = json.loads((out_dir / "answer.json").read_text(encoding="utf-8"))
-    answer_tables = {table["name"] for table in answer["tables"]}
-    assert answer_tables == {table.name for table in pack.tables}
+    answer = BenchAnswer.model_validate_json((out_dir / "answer.json").read_text(encoding="utf-8"))
+    assert {table.name for table in answer.tables} == {table.name for table in pack.tables}
     fk_graph = {
-        (table["name"], fk["references"].split(".")[0])
-        for table in answer["tables"]
-        for fk in table["foreign_keys"]
+        (fk.table, fk.references_table) for table in answer.tables for fk in table.foreign_keys
     }
     declared = {
         (table.name, (column.ref or "").split(".")[0])
@@ -140,6 +137,10 @@ def test_build_dataset_writes_complete_artifacts(pack_name: str, tmp_path: Path)
         if column.kind == "fk"
     }
     assert fk_graph == declared
+    # 모든 테이블이 PK→비키 컬럼 FD를 갖고 행 수가 선언과 같다.
+    for table in answer.tables:
+        assert table.functional_dependencies
+        assert table.row_count == pack.table(table.name).rows
 
 
 def test_hard_variant_is_cp949_multi_header() -> None:

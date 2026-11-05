@@ -9,6 +9,14 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+from bench.answer import (
+    PHYSICAL_TYPE_OF_KIND,
+    AnswerColumn,
+    AnswerForeignKey,
+    AnswerFunctionalDependency,
+    AnswerTable,
+    BenchAnswer,
+)
 from bench.generator.packs import ColumnSpec, Pack
 
 KOREAN_FAMILY = ("김", "이", "박", "최", "정", "강", "조", "윤", "장", "임", "한", "오")
@@ -167,28 +175,46 @@ def flatten(
     return header, flat_rows
 
 
-def answer_schema(pack: Pack, tables: dict[str, list[dict[str, str]]]) -> dict[str, Any]:
-    """정답 스키마. 형식의 정식화(판정 기준)는 T-0009에서 다룬다."""
-    return {
-        "pack": pack.name,
-        "tables": [
-            {
-                "name": table.name,
-                "primary_key": table.pk,
-                "columns": [
-                    {"name": column.name, "kind": column.kind, "references": column.ref}
+def answer_schema(pack: Pack, tables: dict[str, list[dict[str, str]]]) -> BenchAnswer:
+    """정답 스키마. 형식 정의는 bench/answer.py(BenchAnswer)를 따른다."""
+    answer_tables: list[AnswerTable] = []
+    for table in pack.tables:
+        primary_key = table.pk
+        foreign_keys = [
+            AnswerForeignKey(
+                table=table.name,
+                columns=[column.name],
+                references_table=(column.ref or "").split(".")[0],
+                references_columns=[(column.ref or "").split(".")[1]],
+            )
+            for column in table.columns
+            if column.kind == "fk"
+        ]
+        functional_dependencies = [
+            AnswerFunctionalDependency(
+                table=table.name, determinant=primary_key, dependent=column.name
+            )
+            for column in table.columns
+            if column.name not in primary_key
+        ]
+        answer_tables.append(
+            AnswerTable(
+                name=table.name,
+                primary_key=primary_key,
+                columns=[
+                    AnswerColumn(
+                        name=column.name,
+                        physical_type=PHYSICAL_TYPE_OF_KIND[column.kind],
+                        is_foreign_key=column.kind == "fk",
+                    )
                     for column in table.columns
                 ],
-                "foreign_keys": [
-                    {"columns": [column.name], "references": column.ref}
-                    for column in table.columns
-                    if column.kind == "fk"
-                ],
-            }
-            for table in pack.tables
-        ],
-        "row_counts": {name: len(rows) for name, rows in tables.items()},
-    }
+                foreign_keys=foreign_keys,
+                functional_dependencies=functional_dependencies,
+                row_count=len(tables[table.name]),
+            )
+        )
+    return BenchAnswer(pack=pack.name, tables=answer_tables)
 
 
 def write_csv(
