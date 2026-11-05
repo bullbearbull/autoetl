@@ -46,12 +46,24 @@ def test_l0_l1_always_recordable_plain() -> None:
 
 def test_transmission_rules_cover_all_modes() -> None:
     assert set(TRANSMISSION_RULES) == set(SecureMode)
-    strict = TRANSMISSION_RULES[SecureMode.STRICT]
-    assert not strict.sends_metadata and not strict.sends_samples
+    off = TRANSMISSION_RULES[SecureMode.OFF]
+    # Off는 비민감 원문이 나간다(민감 컬럼은 자동 마스킹). 수용 전제의 모드다.
+    assert off.sends_samples and off.sends_metadata and off.sends_raw_values
     secure = TRANSMISSION_RULES[SecureMode.SECURE]
-    assert secure.sends_metadata and not secure.sends_samples
-    for rule in TRANSMISSION_RULES.values():
-        assert not rule.sends_raw_values, "모든 모드에서 실제 셀 값 전송은 금지"
+    assert secure.sends_metadata
+    assert not secure.sends_samples and not secure.sends_raw_values
+    strict = TRANSMISSION_RULES[SecureMode.STRICT]
+    assert not strict.sends_metadata
+    assert not strict.sends_samples and not strict.sends_raw_values
+
+
+def test_data_l3_masked_before_l2_debug() -> None:
+    # 데이터 L3 원문은 어떤 로그 등급에도 못 들어간다. 마스킹 후에야 L2 디버그 로그 가능.
+    confidential = LOG_LEVEL_POLICY[LogLevel.CONFIDENTIAL]
+    assert "마스킹" in confidential.contains
+    restricted = LOG_LEVEL_POLICY[LogLevel.RESTRICTED]
+    assert "데이터 L3" in restricted.contains
+    assert "마스킹" in restricted.retention
 
 
 def test_data_levels_distinct_from_log_levels() -> None:

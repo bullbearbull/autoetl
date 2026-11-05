@@ -69,7 +69,11 @@ LOG_LEVEL_POLICY: dict[LogLevel, LogPolicy] = {
     LogLevel.CONFIDENTIAL: LogPolicy(
         level=LogLevel.CONFIDENTIAL,
         name="기밀",
-        contains="샘플 값, 데이터가 포함된 프롬프트·응답",
+        contains=(
+            "샘플 값, 데이터가 포함된 프롬프트·응답. "
+            "데이터 L2 값(전화·이메일·이름 등)은 이 등급의 암호화 로그에만 담을 수 있다. "
+            "데이터 L3 값(주민등록번호·카드번호·키)은 마스킹한 뒤에만 담는다"
+        ),
         may_record=True,
         requires_explicit_debug=True,
         encrypted_at_rest=True,
@@ -79,9 +83,9 @@ LOG_LEVEL_POLICY: dict[LogLevel, LogPolicy] = {
     LogLevel.RESTRICTED: LogPolicy(
         level=LogLevel.RESTRICTED,
         name="제한",
-        contains="개인정보 원문, 비밀 키, API 키",
+        contains="데이터 L3 원문: 주민등록번호, 카드번호, 비밀 키, API 키",
         may_record=False,
-        retention="기록 자체가 금지",
+        retention="기록 자체가 금지. 마스킹·해시·존재 사실은 L2 이하로 기록 가능",
         audit_alternative="존재 사실과 종류·해시만(값 없음)",
     ),
 }
@@ -93,7 +97,11 @@ class TransmissionRule(ContractModel):
     mode: SecureMode
     sends_samples: bool = Field(description="샘플 행(마스킹 포함)이 외부로 나가는지")
     sends_metadata: bool = Field(description="통계·형태·분포 등 메타데이터가 나가는지")
-    sends_raw_values: bool = Field(description="실제 셀 값이 나갈 수 있는지")
+    sends_raw_values: bool = Field(
+        description=(
+            "비민감 컬럼의 실제 셀 값이 나가는지. True면 민감(L2·L3) 컬럼은 마스킹한 뒤에만 나간다"
+        )
+    )
     note: str
 
 
@@ -102,8 +110,9 @@ TRANSMISSION_RULES: dict[SecureMode, TransmissionRule] = {
         mode=SecureMode.OFF,
         sends_samples=True,
         sends_metadata=True,
-        sends_raw_values=False,
-        note="민감 컬럼은 자동 마스킹한 샘플만. 사용자가 위험을 수용한 모드",
+        sends_raw_values=True,
+        note="비민감 컬럼의 원문 셀 값이 나간다. 민감(L2·L3) 컬럼은 자동 마스킹 후에만. "
+        "사용자가 위험을 수용한 모드",
     ),
     SecureMode.SECURE: TransmissionRule(
         mode=SecureMode.SECURE,
