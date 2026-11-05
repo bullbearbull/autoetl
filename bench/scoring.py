@@ -111,20 +111,25 @@ def _truth_pk_sets(answer: BenchAnswer) -> list[frozenset[str]]:
 
 
 def primary_key_f1(answer: BenchAnswer, prediction: BenchPrediction, variant: str) -> float:
-    """PK 집합 일치 F1. 컬럼 ID 집합이 같으면 같은 PK로 본다."""
+    """PK 집합 일치 F1. 컬럼 ID 집합이 같으면 같은 PK로 본다.
+
+    정밀도 분모는 예측 개수다(중복 포함). 같은 PK를 여러 테이블에 걸쳐 예측하면
+    분자는 한 번만 인정되므로 정밀도가 떨어진다(T-0016).
+    """
     truth = _truth_pk_sets(answer)
     id_map = _id_map(answer, variant)
     predicted = [
-        frozenset(_mapped(name, id_map) for name in table.primary_key)
-        for table in prediction.tables
-        if table.primary_key
+        frozenset(_mapped(name, id_map) for name in predicted_table.primary_key)
+        for predicted_table in prediction.tables
+        if predicted_table.primary_key
     ]
     empty = _perfect_if_empty(truth, predicted)
     if empty is not None:
         return 1.0 if empty else 0.0
-    truth_set, predicted_set = set(truth), set(predicted)
-    recall = len(truth_set & predicted_set) / len(truth_set)
-    precision = len(truth_set & predicted_set) / len(predicted_set) if predicted_set else 0.0
+    truth_set = set(truth)
+    hits = sum(1 for key in truth_set if key in predicted)
+    recall = hits / len(truth_set)
+    precision = hits / len(predicted) if predicted else 0.0
     return _f1(precision, recall)
 
 
@@ -145,18 +150,22 @@ def _truth_fk_pairs(answer: BenchAnswer) -> set[tuple[frozenset[str], frozenset[
 
 
 def foreign_key_f1(answer: BenchAnswer, prediction: BenchPrediction, variant: str) -> float:
-    """FK (자식 PK 컬럼 ID 집합, FK 컬럼 ID 집합) 쌍 일치 F1."""
+    """FK (자식 PK 컬럼 ID 집합, FK 컬럼 ID 집합) 쌍 일치 F1.
+
+    정밀도 분모는 예측 개수다(중복 포함) — 같은 FK를 여러 번 예측해도 분자는
+    한 번만 인정된다(T-0016).
+    """
     truth = _truth_fk_pairs(answer)
     id_map = _id_map(answer, variant)
-    predicted: set[tuple[frozenset[str], frozenset[str]]] = set()
-    for table in prediction.tables:
-        pk_ids = frozenset(_mapped(name, id_map) for name in table.primary_key)
-        for fk in table.foreign_keys:
-            predicted.add((pk_ids, frozenset(_mapped(name, id_map) for name in fk.columns)))
+    predicted: list[tuple[frozenset[str], frozenset[str]]] = []
+    for predicted_table in prediction.tables:
+        pk_ids = frozenset(_mapped(name, id_map) for name in predicted_table.primary_key)
+        for fk in predicted_table.foreign_keys:
+            predicted.append((pk_ids, frozenset(_mapped(name, id_map) for name in fk.columns)))
     empty = _perfect_if_empty(truth, predicted)
     if empty is not None:
         return 1.0 if empty else 0.0
-    hits = len(truth & predicted)
+    hits = sum(1 for pair in truth if pair in predicted)
     recall = hits / len(truth)
     precision = hits / len(predicted) if predicted else 0.0
     return _f1(precision, recall)
@@ -176,12 +185,13 @@ def _truth_fds(answer: BenchAnswer) -> set[tuple[frozenset[str], str]]:
 
 def _predicted_fds(
     prediction: BenchPrediction, id_map: dict[str, str]
-) -> set[tuple[frozenset[str], str]]:
-    return {
+) -> list[tuple[frozenset[str], str]]:
+    """예측 FD 목록. 중복을 그대로 세기 위해 list로 돌려준다(T-0016)."""
+    return [
         (frozenset(_mapped(name, id_map) for name in fd.determinant), _mapped(fd.dependent, id_map))
-        for table in prediction.tables
-        for fd in table.functional_dependencies
-    }
+        for predicted_table in prediction.tables
+        for fd in predicted_table.functional_dependencies
+    ]
 
 
 def functional_dependency_recall(
@@ -193,7 +203,7 @@ def functional_dependency_recall(
     empty = _perfect_if_empty(truth, predicted)
     if empty is not None:
         return 1.0 if empty else 0.0
-    return len(truth & predicted) / len(truth)
+    return sum(1 for fd in truth if fd in predicted) / len(truth)
 
 
 def functional_dependency_f1(
@@ -201,14 +211,15 @@ def functional_dependency_f1(
 ) -> float:
     """FD F1 — 재현율만 쓰면 모든 컬럼 쌍을 FD로 나열한 예측도 100%가 된다.
 
-    종합 점수에는 이 F1을 넣어 정밀도를 함께 잰다.
+    종합 점수에는 이 F1을 넣어 정밀도를 함께 잰다. 정밀도 분모는 예측 개수다
+    (중복 포함) — 같은 FD를 여러 번 예측해도 분자는 한 번만 인정된다(T-0016).
     """
     truth = _truth_fds(answer)
     predicted = _predicted_fds(prediction, _id_map(answer, variant))
     empty = _perfect_if_empty(truth, predicted)
     if empty is not None:
         return 1.0 if empty else 0.0
-    hits = len(truth & predicted)
+    hits = sum(1 for fd in truth if fd in predicted)
     recall = hits / len(truth)
     precision = hits / len(predicted) if predicted else 0.0
     return _f1(precision, recall)
