@@ -113,13 +113,23 @@ def flat_layout(pack: Pack) -> list[FlatColumn]:
     컬럼 ID는 테이블 접두사가 없는 이름이다. FK 컬럼은 참조 대상 부모 PK와 같은
     평면 컬럼을 가리키므로 조인 키는 처음 나오는 위치에 한 번만 놓인다(부모가
     선언 뒤에 와도 자식 FK 위치가 첫 등장이 된다). 조인 키가 아닌 컬럼 이름이
-    팩 안에서 겹치면 헤더가 유일해질 수 없으므로 오류를 낸다.
+    팩 안에서 겹치면 헤더가 유일해질 수 없으므로 오류를 낸다. 부모 PK와 다른
+    이름의 FK 참조도 지원하지 않는다(아래 참조).
     """
     placed: dict[str, FlatColumn] = {}
     order: list[FlatColumn] = []
     for table in pack.tables:
         for column in table.columns:
             column_id = (column.ref or "").split(".")[1] if column.kind == "fk" else column.name
+            if column.kind == "fk" and column.name != column_id:
+                # 같은 부모 PK를 다른 이름으로 참조하는 FK(예: billing_customer_id →
+                # customers.customer_id)는 둘 다 같은 컬럼 ID로 합쳐져 조용히 사라진다.
+                # v0 평면화는 부모 PK와 같은 이름의 조인 키만 지원한다.
+                raise ValueError(
+                    f"이름이 다른 FK 참조는 v0 평면화에서 지원하지 않는다: "
+                    f"{table.name}.{column.name} → {column.ref}. "
+                    "부모 PK와 같은 이름을 쓰거나 팩 구조를 바꿔야 한다"
+                )
             existing = placed.get(column_id)
             if existing is not None:
                 if column.kind == "fk":

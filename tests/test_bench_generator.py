@@ -150,6 +150,36 @@ def test_layout_rejects_non_join_name_collision() -> None:
         flat_layout(bad)
 
 
+def test_layout_rejects_differently_named_fk_to_same_parent() -> None:
+    # Codex 지적(소유자 반영 요청 3): billing_customer_id·shipping_customer_id처럼
+    # 같은 부모 PK를 다른 이름으로 참조하면 한 평면 컬럼으로 조용히 합쳐진다.
+    aliased = Pack(
+        name="aliased",
+        description="같은 부모를 다른 이름으로 참조하는 FK가 있다",
+        license="합성",
+        root="customers",
+        leaf="orders",
+        tables=(
+            TableSpec(
+                name="customers",
+                rows=5,
+                columns=(ColumnSpec(name="customer_id", kind="id", pk=True),),
+            ),
+            TableSpec(
+                name="orders",
+                rows=10,
+                parent="customers",
+                columns=(
+                    ColumnSpec(name="order_id", kind="id", pk=True),
+                    ColumnSpec(name="billing_customer_id", kind="fk", ref="customers.customer_id"),
+                ),
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="이름이 다른 FK 참조"):
+        flat_layout(aliased)
+
+
 # ── 잡음 변형 ────────────────────────────────────────────────────────────────
 
 

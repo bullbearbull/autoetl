@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,11 @@ from bench.answer import (
     PredictedColumn,
     PredictedTable,
 )
-from bench.baselines import name_rule_baseline, wide_table_baseline
+from bench.baselines import (
+    name_rule_baseline,
+    position_break_baseline,
+    wide_table_baseline,
+)
 from bench.criteria import (
     MINIMUM_MODEL_RATIO,
     REQUIRED_JSON_COMPLIANCE,
@@ -414,6 +419,21 @@ def dataset_answers(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Bench
     return answers
 
 
+@pytest.fixture(scope="module")
+def hard_header_rows(tmp_path_factory: pytest.TempPathFactory) -> dict[str, list[list[str]]]:
+    """팩별 hard.csv의 헤더 두 행(그룹 행, 필드 행). 헤더 전용 공격 재료."""
+    import csv
+
+    rows_of: dict[str, list[list[str]]] = {}
+    for pack_name, pack in PACKS.items():
+        out = tmp_path_factory.mktemp("bench_hard") / f"{pack.name}-42"
+        build_dataset(pack, seed=42, out_dir=out)
+        with (out / "hard.csv").open(encoding="cp949", newline="") as handle:
+            content = list(csv.reader(handle))
+        rows_of[pack_name] = content[:2]
+    return rows_of
+
+
 def test_perfect_prediction_is_full_score_on_generated_packs(
     dataset_answers: dict[str, BenchAnswer],
 ) -> None:
@@ -428,8 +448,12 @@ def test_baselines_cannot_reach_full_score(dataset_answers: dict[str, BenchAnswe
         for variant in ("clean", "hard"):
             wide = schema_recovery_score(answer, wide_table_baseline(answer, variant), variant)
             rule = schema_recovery_score(answer, name_rule_baseline(answer, variant), variant)
+            posbreak = schema_recovery_score(
+                answer, position_break_baseline(answer, variant), variant
+            )
             assert wide < 50.0, "와이드 기준선이 지나치게 높으면 헤더 유출이다"
             assert rule < 60.0
+            assert posbreak < 60.0, "위치 끊기가 60을 넘으면 이름 신호가 지나치게 세다"
 
 
 def test_readme_baseline_table_matches_computed(
@@ -441,15 +465,77 @@ def test_readme_baseline_table_matches_computed(
     section = readme.split("### 기준선 점수")[1].split("##")[0]
     table_rows = [line for line in section.splitlines() if line.startswith("|")][2:]
     assert table_rows, "README에 기준선 표가 있어야 한다"
+    baselines = {
+        "단일 와이드": wide_table_baseline,
+        "이름 규칙": name_rule_baseline,
+        "위치 끊기": position_break_baseline,
+    }
     for line in table_rows:
         cells = [cell.strip() for cell in line.strip("|").split("|")]
-        pack_name, variant, wide_cell, rule_cell = cells
+        pack_name, variant = cells[0], cells[1]
         answer = dataset_answers[pack_name]
         assert answer.pack == pack_name
-        wide = schema_recovery_score(answer, wide_table_baseline(answer, variant), variant)
-        rule = schema_recovery_score(answer, name_rule_baseline(answer, variant), variant)
-        assert f"{wide:.2f}" == wide_cell, f"{pack_name}/{variant} 와이드 기준선 불일치"
-        assert f"{rule:.2f}" == rule_cell, f"{pack_name}/{variant} 이름 규칙 기준선 불일치"
+        assert len(cells) == 2 + len(baselines), "표 열 수가 기준선 수와 같아야 한다"
+        for label, factory in baselines.items():
+            cell = cells[2 + list(baselines).index(label)]
+            score = schema_recovery_score(answer, factory(answer, variant), variant)
+            assert f"{score:.2f}" == cell, f"{pack_name}/{variant} {label} 기준선 불일치"
+
+
+def test_hard_header_only_attacks_stay_below_clean_name_signal(
+    dataset_answers: dict[str, BenchAnswer],
+    hard_header_rows: dict[str, list[list[str]]],
+) -> None:
+    """그룹 행·필드 행만 읽는 위치 끊기 공격이 clean 이름 신호보다 낮아야 한다.
+
+    소유자 재리뷰 재현('식별자' 위치 끊기 53.68점)의 재발 방지. 키 컬럼 라벨을
+    '수치'로 통합한 뒤에도 '수치' 위치 끊기가 와이드 기준선을 넘는 잔여 신호가
+    있어(orders_kr 47.87점) 현행 판정 기준은 clean 위치 끊기 미만으로 둔다.
+    """
+    for pack_name, answer in dataset_answers.items():
+        group_row, field_row = hard_header_rows[pack_name]
+        clean_signal = schema_recovery_score(
+            answer, position_break_baseline(answer, "clean"), "clean"
+        )
+        wide = schema_recovery_score(answer, wide_table_baseline(answer, "hard"), "hard")
+
+        def from_segments(segments: list[list[str]]) -> BenchPrediction:
+            return BenchPrediction(
+                tables=[
+                    PredictedTable(
+                        columns=[
+                            PredictedColumn(name=name, physical_type=PhysicalType.STRING)
+                            for name in segment
+                        ],
+                        primary_key=[segment[0]],
+                    )
+                    for segment in segments
+                    if segment
+                ]
+            )
+
+        attacks: dict[str, list[list[str]]] = {}
+        # 공격 1: 라벨이 바뀌는 지점마다 끊는다(라벨런 세그먼트).
+        segments: list[list[str]] = [[field_row[0]]]
+        for i in range(1, len(group_row)):
+            if group_row[i] != group_row[i - 1]:
+                segments.append([])
+            segments[-1].append(field_row[i])
+        attacks["라벨런"] = segments
+        # 공격 2: 라벨 값 하나를 골라 그 위치 앞에서마다 끊는다(구 '식별자' 공격의 일반화).
+        for label in sorted(set(group_row)):
+            starts = [i for i, value in enumerate(group_row) if value == label]
+            bounds = sorted({0, *starts, len(field_row)})
+            attacks[f"라벨 {label}"] = [
+                field_row[start:end] for start, end in pairwise(bounds) if end > start
+            ]
+        for name, segments in attacks.items():
+            score = schema_recovery_score(answer, from_segments(segments), "hard")
+            assert score < clean_signal, (
+                f"{pack_name} hard 헤더 전용 공격({name})이 clean 이름 신호"
+                f"({clean_signal:.2f})를 넘었다: {score:.2f}"
+            )
+        assert wide < clean_signal
 
 
 # ── 관문·판정 ────────────────────────────────────────────────────────────────
