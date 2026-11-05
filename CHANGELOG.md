@@ -7,6 +7,7 @@
 
 ### Added
 
+- 빈 파이프라인 러너 v0(`src/autoetl/core/pipeline.py`): S0~S14를 계약 스텁으로 연결, 벤치 v0 데이터셋에서 종주. `autoetl analyze <csv> --no-llm [--out report.json]` CLI 콘솔 스크립트 (T-0010)
 - 벤치 정답 형식과 채점 기준 v0: `bench/answer.py`(BenchAnswer 정답·예측 형식), `bench/scoring.py`(타입 F1·PK/FK F1·FD 복원율·배정 ARI·종합 점수), `bench/criteria.py`(필수 관문 3종, 최소 85%·권장 95% 모델 판정), 명세 `bench/README.md`. 생성기 answer.json을 정식 형식으로 교체 (T-0009)
 - 벤치 데이터셋 생성기 v0(`bench/generator/`): 합성 관계형 팩 2종, 시드 고정 생성, 리프→루트 조인 평면화, 잡음 변형 7종(결측·형식 혼재·앞자리 0·다중 헤더·CP949·hard), 정답 스키마·메니페스트 출력 (T-0008)
 - 데이터·로그 등급 정책 v0: 문서(`docs/policy/data-log-levels.md`)와 기계 판독형 정의(`src/autoetl/security/levels.py`), 카나리 테스트 설계, 정합성 테스트 (T-0007)

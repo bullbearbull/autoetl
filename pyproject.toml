@@ -19,6 +19,9 @@ dev = [
     "types-pyyaml>=6.0",
 ]
 
+[project.scripts]
+autoetl = "autoetl.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
