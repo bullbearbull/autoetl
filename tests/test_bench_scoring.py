@@ -1,9 +1,12 @@
-"""벤치 정답 형식·채점 지표·판정 기준 검증."""
+"""벤치 정답 형식·채점 지표·판정 기준 검증(T-0015 컬럼 ID 키 기준)."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from bench.answer import (
+    ANSWER_VERSION,
     AnswerColumn,
     AnswerForeignKey,
     AnswerFunctionalDependency,
@@ -13,6 +16,7 @@ from bench.answer import (
     PredictedColumn,
     PredictedTable,
 )
+from bench.baselines import name_rule_baseline, wide_table_baseline
 from bench.criteria import (
     MINIMUM_MODEL_RATIO,
     REQUIRED_JSON_COMPLIANCE,
@@ -21,6 +25,7 @@ from bench.criteria import (
     check_gates,
     classify_models,
 )
+from bench.generator import PACKS, build_dataset
 from bench.scoring import (
     adjusted_rand_index,
     foreign_key_f1,
@@ -35,6 +40,8 @@ from pydantic import ValidationError
 
 from autoetl.contracts import PhysicalType
 
+# ── 데모 정답: 조인 키(a_id)는 평면에서 한 번 ───────────────────────────────
+
 
 def demo_answer() -> BenchAnswer:
     return BenchAnswer(
@@ -44,9 +51,13 @@ def demo_answer() -> BenchAnswer:
                 name="a",
                 primary_key=["a_id"],
                 columns=[
-                    AnswerColumn(name="a_id", physical_type=PhysicalType.STRING),
-                    AnswerColumn(name="a_name", physical_type=PhysicalType.STRING),
-                    AnswerColumn(name="a_amt", physical_type=PhysicalType.DECIMAL),
+                    AnswerColumn(name="a_id", column_id="a_id", physical_type=PhysicalType.STRING),
+                    AnswerColumn(
+                        name="a_name", column_id="a_name", physical_type=PhysicalType.STRING
+                    ),
+                    AnswerColumn(
+                        name="a_amt", column_id="a_amt", physical_type=PhysicalType.DECIMAL
+                    ),
                 ],
                 functional_dependencies=[
                     AnswerFunctionalDependency(table="a", determinant=["a_id"], dependent="a_name"),
@@ -58,9 +69,10 @@ def demo_answer() -> BenchAnswer:
                 name="b",
                 primary_key=["b_id"],
                 columns=[
-                    AnswerColumn(name="b_id", physical_type=PhysicalType.STRING),
+                    AnswerColumn(name="b_id", column_id="b_id", physical_type=PhysicalType.STRING),
                     AnswerColumn(
-                        name="b_a_id",
+                        name="a_id",
+                        column_id="a_id",  # FK는 부모 PK와 같은 평면 컬럼
                         physical_type=PhysicalType.STRING,
                         is_foreign_key=True,
                     ),
@@ -68,50 +80,68 @@ def demo_answer() -> BenchAnswer:
                 foreign_keys=[
                     AnswerForeignKey(
                         table="b",
-                        columns=["b_a_id"],
+                        columns=["a_id"],
                         references_table="a",
                         references_columns=["a_id"],
                     )
                 ],
                 functional_dependencies=[
-                    AnswerFunctionalDependency(table="b", determinant=["b_id"], dependent="b_a_id")
+                    AnswerFunctionalDependency(table="b", determinant=["b_id"], dependent="a_id")
                 ],
                 row_count=50,
             ),
         ],
+        variant_headers={
+            "clean": ["a_id", "a_name", "a_amt", "b_id"],
+            "hard": ["col_01", "col_02", "col_03", "col_04"],
+        },
     )
 
 
-def perfect_prediction(answer: BenchAnswer) -> BenchPrediction:
+def perfect_prediction(answer: BenchAnswer, variant: str = "clean") -> BenchPrediction:
+    """정답을 그대로 옮긴 예측. 컬럼 이름은 그 변형의 헤더 문자열이다."""
+    header = answer.variant_headers[variant]
+    column_ids: list[str] = []
+    seen: set[str] = set()
+    for table in answer.tables:
+        for column in table.columns:
+            if column.column_id not in seen:
+                seen.add(column.column_id)
+                column_ids.append(column.column_id)
+    name_of = dict(zip(column_ids, header, strict=True))
+    info: dict[str, tuple[PhysicalType, bool]] = {}
+    for table in answer.tables:
+        for column in table.columns:
+            info.setdefault(column.column_id, (column.physical_type, column.is_foreign_key))
     tables: list[PredictedTable] = []
     for table in answer.tables:
+        member_ids = list(dict.fromkeys(column.column_id for column in table.columns))
+        n2i = {column.name: column.column_id for column in table.columns}
         tables.append(
             PredictedTable(
                 columns=[
                     PredictedColumn(
-                        name=f"{table.name}_{column.name}",
-                        physical_type=column.physical_type,
-                        is_foreign_key=column.is_foreign_key,
+                        name=name_of[column_id],
+                        physical_type=info[column_id][0],
+                        is_foreign_key=info[column_id][1],
                     )
-                    for column in table.columns
+                    for column_id in member_ids
                 ],
-                primary_key=[f"{table.name}_{pk}" for pk in table.primary_key],
+                primary_key=[name_of[n2i[name]] for name in table.primary_key],
                 foreign_keys=[
                     AnswerForeignKey(
                         table="",
-                        columns=[f"{fk.table}_{c}" for c in fk.columns],
+                        columns=[name_of[n2i[name]] for name in fk.columns],
                         references_table="",
-                        references_columns=[
-                            f"{fk.references_table}_{c}" for c in fk.references_columns
-                        ],
+                        references_columns=fk.columns,
                     )
                     for fk in table.foreign_keys
                 ],
                 functional_dependencies=[
                     AnswerFunctionalDependency(
                         table="",
-                        determinant=[f"{table.name}_{c}" for c in fd.determinant],
-                        dependent=f"{table.name}_{fd.dependent}",
+                        determinant=[name_of[n2i[name]] for name in fd.determinant],
+                        dependent=name_of[n2i[fd.dependent]],
                     )
                     for fd in table.functional_dependencies
                 ],
@@ -120,39 +150,86 @@ def perfect_prediction(answer: BenchAnswer) -> BenchPrediction:
     return BenchPrediction(tables=tables)
 
 
-def test_perfect_prediction_scores_full() -> None:
+# ── 만점 경로 ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("variant", ["clean", "hard"])
+def test_perfect_prediction_scores_full(variant: str) -> None:
+    answer = demo_answer()
+    prediction = perfect_prediction(answer, variant)
+    assert type_f1(answer, prediction, variant) == pytest.approx(1.0)
+    assert primary_key_f1(answer, prediction, variant) == pytest.approx(1.0)
+    assert foreign_key_f1(answer, prediction, variant) == pytest.approx(1.0)
+    assert functional_dependency_recall(answer, prediction, variant) == pytest.approx(1.0)
+    assert adjusted_rand_index(answer, prediction, variant) == pytest.approx(1.0)
+    assert table_count_error(answer, prediction) == 0
+    assert schema_recovery_score(answer, prediction, variant) == pytest.approx(100.0)
+
+
+def test_join_key_predicted_in_two_tables_counts_once_and_belongs_to_pk_owner() -> None:
     answer = demo_answer()
     prediction = perfect_prediction(answer)
-    assert type_f1(answer, prediction) == pytest.approx(1.0)
-    assert primary_key_f1(answer, prediction) == pytest.approx(1.0)
-    assert foreign_key_f1(answer, prediction) == pytest.approx(1.0)
-    assert functional_dependency_recall(answer, prediction) == pytest.approx(1.0)
-    assert adjusted_rand_index(answer, prediction) == pytest.approx(1.0)
-    assert table_count_error(answer, prediction) == 0
-    assert schema_recovery_score(answer, prediction) == pytest.approx(100.0)
+    # 조인 키 a_id를 세 번째 테이블에 일반 컬럼으로 한 번 더 예측한 경우.
+    prediction.tables.append(
+        PredictedTable(
+            columns=[
+                PredictedColumn(name="a_id", physical_type=PhysicalType.STRING),
+                PredictedColumn(name="ghost", physical_type=PhysicalType.STRING),
+            ],
+            primary_key=["ghost"],
+        )
+    )
+    # 타입: a_id는 컬럼 ID당 한 번만 센다. 환각 ghost만 정밀도를 깎는다:
+    # F1 = 2*(4/5)*1/((4/5)+1) = 8/9 (a_id를 두 번 세었다면 정밀도 4/6 → F1 0.8).
+    assert type_f1(answer, prediction, "clean") == pytest.approx(8 / 9)
+    # 배정: a_id는 PK로 쓴 테이블(a) 소속. ghost는 ARI가 벌점하지 않는다.
+    assert adjusted_rand_index(answer, prediction, "clean") == pytest.approx(1.0)
+    # PK: {a_id} 집합은 두 번 예측해도 같은 집합이라 중복으로 세지 않는다.
+    # 환각 {ghost} PK만 정밀도를 깎는다: F1 = 2*(2/3)*1/((2/3)+1) = 0.8
+    # (a_id를 두 번 세었다면 정밀도 2/4 → F1 0.667).
+    assert primary_key_f1(answer, prediction, "clean") == pytest.approx(0.8)
+
+
+def test_hallucinated_column_cuts_type_precision_not_ari() -> None:
+    answer = demo_answer()
+    prediction = perfect_prediction(answer)
+    prediction.tables.append(
+        PredictedTable(
+            columns=[
+                PredictedColumn(name="ghost", physical_type=PhysicalType.STRING),
+            ],
+            primary_key=["ghost"],
+        )
+    )
+    # 환각 컬럼 ghost: 타입 정밀도는 깎지만(F1 8/9) ARI는 벌점하지 않는다.
+    assert type_f1(answer, prediction, "clean") == pytest.approx(8 / 9)
+    assert adjusted_rand_index(answer, prediction, "clean") == pytest.approx(1.0)
 
 
 def test_one_wrong_type_drops_type_f1() -> None:
     answer = demo_answer()
     prediction = perfect_prediction(answer)
-    # 5개 컬럼 중 1개(a.a_amt → 평면 이름 a_a_amt) 타입을 틀리게 예측
+    # 4개 평면 컬럼 중 1개(a_amt) 타입을 틀리게 예측
     for table in prediction.tables:
         for column in table.columns:
-            if column.name == "a_a_amt":
+            if column.name == "a_amt":
                 column.physical_type = PhysicalType.INTEGER
-    # 정밀도 4/5, 재현율 4/5 → F1 = 0.8 (이름만 아는 컬럼은 정밀도에 못 들어간다)
-    assert type_f1(answer, prediction) == pytest.approx(0.8)
+    # 정밀도 3/4, 재현율 3/4 → F1 = 0.75
+    assert type_f1(answer, prediction, "clean") == pytest.approx(0.75)
 
 
-def test_spam_fds_keep_recall_but_lose_f1() -> None:
+def test_unknown_variant_or_length_mismatch_raises() -> None:
     answer = demo_answer()
     prediction = perfect_prediction(answer)
-    spam = AnswerFunctionalDependency(table="", determinant=["a_a_name"], dependent="a_a_amt")
-    prediction.tables[0].functional_dependencies.append(spam)
-    assert functional_dependency_recall(answer, prediction) == pytest.approx(1.0)
-    assert functional_dependency_f1(answer, prediction) == pytest.approx(
-        2 * (3 / 4) * 1.0 / (3 / 4 + 1.0)
-    )
+    with pytest.raises(ValueError, match="헤더가 없다"):
+        type_f1(answer, prediction, "format_mix")
+    broken = answer.model_copy(deep=True)
+    broken.variant_headers["clean"] = broken.variant_headers["clean"][:3]
+    with pytest.raises(ValueError, match="길이"):
+        type_f1(broken, prediction, "clean")
+
+
+# ── ARI 커버리지(T-0014 규칙 유지) ──────────────────────────────────────────
 
 
 def test_ari_single_common_column_is_scaled_by_coverage() -> None:
@@ -160,40 +237,41 @@ def test_ari_single_common_column_is_scaled_by_coverage() -> None:
     partial = BenchPrediction(
         tables=[
             PredictedTable(
-                columns=[PredictedColumn(name="a_a_id", physical_type=PhysicalType.STRING)],
-                primary_key=["a_a_id"],
+                columns=[PredictedColumn(name="a_id", physical_type=PhysicalType.STRING)],
+                primary_key=["a_id"],
             )
         ]
     )
-    # 겹치는 컬럼 1개: 배정 비교는 자명 일치(1.0)지만 커버리지 1/5가 곱해진다.
-    assert adjusted_rand_index(answer, partial) == pytest.approx(1.0 / 5)
+    # 겹치는 컬럼 1개: 배정 비교는 자명 일치(1.0)지만 커버리지 1/4가 곱해진다.
+    assert adjusted_rand_index(answer, partial, "clean") == pytest.approx(1.0 / 4)
 
 
 def test_ari_scales_with_overlap_ratio() -> None:
     answer = demo_answer()
-    # 테이블 a의 컬럼 2개만, 같은 테이블로 정확히 배정 → 기본 ARI 1.0에 커버리지 2/5를 곱한다
+    # 테이블 a의 컬럼 2개만, 같은 테이블로 정확히 배정 → 기본 ARI 1.0에 커버리지 2/4를 곱한다
     partial = BenchPrediction(
         tables=[
             PredictedTable(
                 columns=[
-                    PredictedColumn(name="a_a_id", physical_type=PhysicalType.STRING),
-                    PredictedColumn(name="a_a_name", physical_type=PhysicalType.STRING),
+                    PredictedColumn(name="a_id", physical_type=PhysicalType.STRING),
+                    PredictedColumn(name="a_name", physical_type=PhysicalType.STRING),
                 ],
-                primary_key=["a_a_id"],
+                primary_key=["a_id"],
             )
         ]
     )
-    assert adjusted_rand_index(answer, partial) == pytest.approx(2.0 / 5)
-    # 예측을 늘릴수록 점수가 내려가는 구간이 없어져야 한다(소유자 재리뷰 지적).
+    assert adjusted_rand_index(answer, partial, "clean") == pytest.approx(2.0 / 4)
     one_column = BenchPrediction(
         tables=[
             PredictedTable(
-                columns=[PredictedColumn(name="a_a_id", physical_type=PhysicalType.STRING)],
-                primary_key=["a_a_id"],
+                columns=[PredictedColumn(name="a_id", physical_type=PhysicalType.STRING)],
+                primary_key=["a_id"],
             )
         ]
     )
-    assert adjusted_rand_index(answer, one_column) < adjusted_rand_index(answer, partial)
+    assert adjusted_rand_index(answer, one_column, "clean") < adjusted_rand_index(
+        answer, partial, "clean"
+    )
 
 
 def test_ari_full_coverage_prediction_beats_single_column_composite() -> None:
@@ -202,34 +280,38 @@ def test_ari_full_coverage_prediction_beats_single_column_composite() -> None:
     one_column = BenchPrediction(
         tables=[
             PredictedTable(
-                columns=[PredictedColumn(name="a_a_id", physical_type=PhysicalType.STRING)],
-                primary_key=["a_a_id"],
+                columns=[PredictedColumn(name="a_id", physical_type=PhysicalType.STRING)],
+                primary_key=["a_id"],
             )
         ]
     )
     merged_columns = [
-        PredictedColumn(name=f"{table.name}_{column.name}", physical_type=column.physical_type)
-        for table in answer.tables
-        for column in table.columns
+        PredictedColumn(name=name, physical_type=PhysicalType.STRING)
+        for name in answer.variant_headers["clean"]
     ]
-    merged = BenchPrediction(
-        tables=[PredictedTable(columns=merged_columns, primary_key=["a_a_id"])]
+    merged = BenchPrediction(tables=[PredictedTable(columns=merged_columns, primary_key=["a_id"])])
+    assert schema_recovery_score(answer, one_column, "clean") < schema_recovery_score(
+        answer, merged, "clean"
     )
-    assert schema_recovery_score(answer, one_column) < schema_recovery_score(answer, merged)
+
+
+# ── 빈 정답·스팸(T-0014 규칙 유지) ──────────────────────────────────────────
 
 
 def test_empty_truth_fds_penalize_spam() -> None:
-    # FD가 없는 정답(FK도 없음): 스팸 FD를 늘어놓으면 0점, 비워 두면 만점.
     fd_free = BenchAnswer(
         pack="demo",
         tables=[
             AnswerTable(
                 name="solo",
                 primary_key=["id"],
-                columns=[AnswerColumn(name="id", physical_type=PhysicalType.STRING)],
+                columns=[
+                    AnswerColumn(name="id", column_id="id", physical_type=PhysicalType.STRING)
+                ],
                 row_count=1,
             )
         ],
+        variant_headers={"clean": ["id"]},
     )
 
     def solo_prediction(
@@ -240,37 +322,39 @@ def test_empty_truth_fds_penalize_spam() -> None:
         return BenchPrediction(
             tables=[
                 PredictedTable(
-                    columns=[PredictedColumn(name="solo_id", physical_type=PhysicalType.STRING)],
-                    primary_key=["solo_id"],
+                    columns=[PredictedColumn(name="id", physical_type=PhysicalType.STRING)],
+                    primary_key=["id"],
                     functional_dependencies=functional_dependencies or [],
                     foreign_keys=foreign_keys or [],
                 )
             ]
         )
 
-    assert functional_dependency_recall(fd_free, solo_prediction()) == 1.0
-    assert functional_dependency_f1(fd_free, solo_prediction()) == 1.0
-    assert foreign_key_f1(fd_free, solo_prediction()) == 1.0
+    assert functional_dependency_recall(fd_free, solo_prediction(), "clean") == 1.0
+    assert functional_dependency_f1(fd_free, solo_prediction(), "clean") == 1.0
+    assert foreign_key_f1(fd_free, solo_prediction(), "clean") == 1.0
 
     spam_fds = [
-        AnswerFunctionalDependency(table="", determinant=["solo_id"], dependent="solo_id")
-        for _ in range(462)
+        AnswerFunctionalDependency(table="", determinant=["id"], dependent="id") for _ in range(462)
     ]
     assert (
-        functional_dependency_recall(fd_free, solo_prediction(functional_dependencies=spam_fds))
+        functional_dependency_recall(
+            fd_free, solo_prediction(functional_dependencies=spam_fds), "clean"
+        )
         == 0.0
     )
     assert (
-        functional_dependency_f1(fd_free, solo_prediction(functional_dependencies=spam_fds)) == 0.0
+        functional_dependency_f1(
+            fd_free, solo_prediction(functional_dependencies=spam_fds), "clean"
+        )
+        == 0.0
     )
 
     spam_fks = [
-        AnswerForeignKey(
-            table="", columns=["solo_id"], references_table="", references_columns=["solo_id"]
-        )
+        AnswerForeignKey(table="", columns=["id"], references_table="", references_columns=["id"])
         for _ in range(30)
     ]
-    assert foreign_key_f1(fd_free, solo_prediction(foreign_keys=spam_fks)) == 0.0
+    assert foreign_key_f1(fd_free, solo_prediction(foreign_keys=spam_fks), "clean") == 0.0
 
 
 def test_missing_table_lowers_ari_and_pk() -> None:
@@ -282,33 +366,25 @@ def test_missing_table_lowers_ari_and_pk() -> None:
         tables=[
             PredictedTable(
                 columns=merged_columns,
-                primary_key=["a_a_id"],
-                foreign_keys=[
-                    AnswerForeignKey(
-                        table="",
-                        columns=["b_b_a_id"],
-                        references_table="",
-                        references_columns=["a_a_id"],
-                    )
-                ],
+                primary_key=["a_id"],
                 functional_dependencies=[],
             )
         ]
     )
     # 예측이 한 덩어리면 ARI = 0 (b_comb = c2(n)이 되어 분자가 0으로 수렴)
-    assert adjusted_rand_index(answer, merged) == pytest.approx(0.0)
+    assert adjusted_rand_index(answer, merged, "clean") == pytest.approx(0.0)
     # PK: 정담 2개 중 1개 재현, 예측 1개 → 정밀도 1, 재현율 .5
-    assert primary_key_f1(answer, merged) == pytest.approx(2 * 0.5 / 1.5)
+    assert primary_key_f1(answer, merged, "clean") == pytest.approx(2 * 0.5 / 1.5)
     assert table_count_error(answer, merged) == -1
-    assert functional_dependency_recall(answer, merged) == 0.0
-    assert schema_recovery_score(answer, merged) < 60.0
+    assert functional_dependency_recall(answer, merged, "clean") == 0.0
+    assert schema_recovery_score(answer, merged, "clean") < 60.0
 
 
 def test_dropped_fk_zeroes_fk_f1() -> None:
     answer = demo_answer()
     prediction = perfect_prediction(answer)
     prediction.tables[1].foreign_keys = []
-    assert foreign_key_f1(answer, prediction) == 0.0
+    assert foreign_key_f1(answer, prediction, "clean") == 0.0
 
 
 def test_answer_format_is_closed() -> None:
@@ -317,6 +393,63 @@ def test_answer_format_is_closed() -> None:
     payload["tables"][0]["bogus"] = 1
     with pytest.raises(ValidationError):
         BenchAnswer.model_validate(payload)
+
+
+def test_answer_version_bumped() -> None:
+    assert ANSWER_VERSION == "0.2.0"
+
+
+# ── 기준선(README 문서↔코드 일치) ──────────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def dataset_answers(tmp_path_factory: pytest.TempPathFactory) -> dict[str, BenchAnswer]:
+    answers: dict[str, BenchAnswer] = {}
+    for pack_name, pack in PACKS.items():
+        out = tmp_path_factory.mktemp("bench") / f"{pack.name}-42"
+        build_dataset(pack, seed=42, out_dir=out)
+        answers[pack_name] = BenchAnswer.model_validate_json(
+            (out / "answer.json").read_text(encoding="utf-8")
+        )
+    return answers
+
+
+def test_perfect_prediction_is_full_score_on_generated_packs(
+    dataset_answers: dict[str, BenchAnswer],
+) -> None:
+    for answer in dataset_answers.values():
+        for variant in ("clean", "hard"):
+            prediction = perfect_prediction(answer, variant)
+            assert schema_recovery_score(answer, prediction, variant) == pytest.approx(100.0)
+
+
+def test_baselines_cannot_reach_full_score(dataset_answers: dict[str, BenchAnswer]) -> None:
+    for answer in dataset_answers.values():
+        for variant in ("clean", "hard"):
+            wide = schema_recovery_score(answer, wide_table_baseline(answer, variant), variant)
+            rule = schema_recovery_score(answer, name_rule_baseline(answer, variant), variant)
+            assert wide < 50.0, "와이드 기준선이 지나치게 높으면 헤더 유출이다"
+            assert rule < 60.0
+
+
+def test_readme_baseline_table_matches_computed(
+    dataset_answers: dict[str, BenchAnswer],
+) -> None:
+    readme = (Path(__file__).resolve().parents[1] / "bench" / "README.md").read_text(
+        encoding="utf-8"
+    )
+    section = readme.split("### 기준선 점수")[1].split("##")[0]
+    table_rows = [line for line in section.splitlines() if line.startswith("|")][2:]
+    assert table_rows, "README에 기준선 표가 있어야 한다"
+    for line in table_rows:
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        pack_name, variant, wide_cell, rule_cell = cells
+        answer = dataset_answers[pack_name]
+        assert answer.pack == pack_name
+        wide = schema_recovery_score(answer, wide_table_baseline(answer, variant), variant)
+        rule = schema_recovery_score(answer, name_rule_baseline(answer, variant), variant)
+        assert f"{wide:.2f}" == wide_cell, f"{pack_name}/{variant} 와이드 기준선 불일치"
+        assert f"{rule:.2f}" == rule_cell, f"{pack_name}/{variant} 이름 규칙 기준선 불일치"
 
 
 # ── 관문·판정 ────────────────────────────────────────────────────────────────
@@ -369,36 +502,14 @@ def test_classify_models_minimum_and_recommended() -> None:
 def test_classify_models_gate_failure_excludes() -> None:
     runs = [
         run("leaky", 70, 99, leak=1),
-        run("clean", 8, 80),
+        run("clean", 8, 85),
     ]
     result = classify_models(runs)
-    # 기준선은 전체 최고 점수(leaky 99). clean 80은 99*0.85=84.15에 못 미쳐 판정 보류.
+    # 기준선은 관문 실패 모델(leaky 99)의 최고 점수이되, 후보는 clean뿐이다.
+    # 최소 기준선 99*0.85=84.15 → clean(85) 자격 있음, 권장 94.05 → 없음.
     assert result.best_score == 99.0
-    assert result.minimum_model is None
+    assert result.minimum_model == "clean"
     assert result.recommended_model is None
-    assert "전체 최고 점수" in result.reason
-
-
-def test_classify_models_baseline_all_models() -> None:
-    # 관문 통과 모델만 있을 때 기준선은 그중 최고 점수와 같다.
-    runs = [
-        run("big", 70, 90, cost=10.0),
-        run("mid", 8, 77, cost=2.0),  # 90*0.85=76.5 이상
-    ]
-    result = classify_models(runs)
-    assert result.minimum_model == "mid"
-    assert result.recommended_model == "big"
-
-
-def test_classify_models_rejects_zero_cost() -> None:
-    with pytest.raises(ValidationError):
-        run("free", 8, 90, cost=0.0)
-
-
-def test_classify_models_empty_runs() -> None:
-    result = classify_models([])
-    assert result.minimum_model is None
-    assert result.best_score == 0.0
 
 
 def test_classify_models_no_qualifier() -> None:

@@ -63,6 +63,24 @@ class Pack:
         return chain
 
 
+@dataclass(frozen=True)
+class FlatColumn:
+    """평면 파일의 컬럼 하나. 조인 키는 첫 등장 위치에 한 번만 담긴다.
+
+    column_id는 테이블 접두사가 없는 컬럼 이름이다. kind는 이 위치를 차지한
+    원본 컬럼의 종류(조인 키를 FK 위치에 먼저 놓으면 "fk"). is_key는 PK·조인
+    키 컬럼(결측 주입 금지 대상)을 뜻한다. ref_of는 그 원본 컬럼의 FK 참조
+    대상("테이블.컬럼", 비FK면 빈 문자열)이다.
+    """
+
+    column_id: str
+    kind: str
+    is_key: bool
+    table: str  # 이 위치를 차지한 원본 테이블
+    name: str  # 원본 컬럼 이름(FK면 자식 컬럼 이름)
+    ref_of: str = ""
+
+
 ORDERS_KR = Pack(
     name="orders_kr",
     description="한국 전자상거래 주문(고객→주문→주문상품→상품)",
@@ -147,6 +165,7 @@ MUSIC = Pack(
                 ColumnSpec(name="title", kind="text"),
                 ColumnSpec(name="release_date", kind="date"),
                 ColumnSpec(name="genre", kind="category"),
+                ColumnSpec(name="catalog_no", kind="code", zero_pad=5),
                 ColumnSpec(name="artist_id", kind="fk", ref="artists.artist_id"),
             ),
         ),

@@ -215,4 +215,4 @@ def test_cli_refuses_hardlinked_out(bench_csv: Path, tmp_path: Path) -> None:
     os.link(bench_csv, hardlink)
     assert cli_main(["analyze", str(bench_csv), "--no-llm", "--out", str(hardlink)]) == 2
     # 원본이 보고서로 덮어씌워지지 않았는지 확인(여전히 CSV 헤더).
-    assert bench_csv.read_text(encoding="utf-8").startswith("customers_customer_id")
+    assert bench_csv.read_text(encoding="utf-8").startswith("customer_id")
