@@ -16,20 +16,24 @@ from typing import Any
 
 from bench.generator.emit import (
     answer_schema,
+    flat_layout,
     flatten,
     generate_pack,
     write_csv,
     write_json,
 )
-from bench.generator.noise import VARIANTS, apply_noise
-from bench.generator.packs import PACKS, Pack
+from bench.generator.noise import MULTI_HEADER_VARIANTS, VARIANTS, apply_noise
+from bench.generator.packs import PACKS, FlatColumn, Pack
 
 __all__ = [
+    "MULTI_HEADER_VARIANTS",
     "PACKS",
     "VARIANTS",
+    "FlatColumn",
     "Pack",
     "answer_schema",
     "build_dataset",
+    "flat_layout",
     "flatten",
     "generate_pack",
 ]
@@ -39,13 +43,19 @@ def build_dataset(pack: Pack, seed: int, out_dir: Path) -> dict[str, Any]:
     """팩 하나로 데이터셋 디렉터리를 만든다. 반환: 메니페스트 내용."""
     tables = generate_pack(pack, seed)
     header, rows = flatten(pack, tables)
+    columns = flat_layout(pack)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     files: list[dict[str, str]] = []
+    variant_headers: dict[str, list[str]] = {}
     for variant in VARIANTS:
-        out_rows, encoding = apply_noise(variant, header, rows, seed=seed)
+        out_rows, encoding = apply_noise(variant, header, rows, seed=seed, columns=columns)
         file_name = f"{variant}.csv"
         write_csv(out_dir / file_name, out_rows[0], out_rows[1:], encoding=encoding)
+        # 필드 헤더 행(다중 헤더는 마지막 헤더 행)이 그 변형의 컬럼 이름이다.
+        header_depth = 2 if variant in MULTI_HEADER_VARIANTS else 1
+        field_row = out_rows[header_depth - 1]
+        variant_headers[variant] = list(field_row)
         file_entry: dict[str, Any] = {
             "variant": variant,
             "file": file_name,
@@ -54,7 +64,7 @@ def build_dataset(pack: Pack, seed: int, out_dir: Path) -> dict[str, Any]:
         }
         files.append(file_entry)
 
-    answer = answer_schema(pack, tables)
+    answer = answer_schema(pack, tables, variant_headers=variant_headers)
     write_json(out_dir / "answer.json", answer.model_dump(mode="json"))
     manifest: dict[str, Any] = {
         "generator": "bench.generator v0",

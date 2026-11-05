@@ -4,34 +4,60 @@ docs/PLAN.md 벤치 지표 표의 스키마 복원 영역을 다룬다: 타입 F
 재현율, FD 복원율, 컬럼-테이블 배정 일치도(ARI), 테이블 수 오차. DDL·적재·안정성·
 보안·비용 지표는 실행기(런너)가 실측값을 채운다.
 
-채점 키 규칙(v0 합의): 예측(채점용)의 컬럼 이름은 평면 입력 파일의 헤더 이름,
-즉 정답의 '테이블_컬럼'을 그대로 보존한다. 예측 테이블 이름은 채점에 쓰지 않는다.
+채점 키 규칙(T-0015): 정답 컬럼은 컬럼 ID(테이블 접두사가 없는 이름, 조인 키는
+부모 PK 이름 하나)로 식별한다. 예측의 컬럼 이름은 채점 대상 변형 CSV의 헤더
+문자열이고, 정답의 variant_headers와 위치가 같으므로 헤더 이름 → 컬럼 ID 대응으로
+바꿔 채점한다. 예측 테이블 이름은 채점에 쓰지 않는다. FK 식별은 (자식 테이블 PK의
+컬럼 ID 집합, FK 컬럼 ID 집합) 쌍 — 조인 키가 부모·자식에서 같은 평면 컬럼이라
+예전의 (자식 컬럼, 부모 컬럼) 쌍으로는 구분되지 않기 때문이다.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sized
 
+from autoetl.contracts.common import PhysicalType
 from bench.answer import BenchAnswer, BenchPrediction
 
 
-def _flat(table: str, column: str) -> str:
-    """정답의 (테이블, 컬럼)을 평면 헤더 이름으로 바꾼다."""
-    return f"{table}_{column}"
+def _column_ids(answer: BenchAnswer) -> list[str]:
+    """정답의 평면 컬럼 ID(테이블 선언 순, 조인 키는 첫 등장 한 번)."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for table in answer.tables:
+        for column in table.columns:
+            if column.column_id not in seen:
+                seen.add(column.column_id)
+                ids.append(column.column_id)
+    return ids
 
 
-def _truth_columns(answer: BenchAnswer) -> dict[str, str]:
-    """평면 컬럼 이름 → 물리 타입."""
+def _id_map(answer: BenchAnswer, variant: str) -> dict[str, str]:
+    """변형 헤더 이름 → 컬럼 ID. 변형 헤더와 정답 컬럼은 위치가 같다."""
+    headers = answer.variant_headers.get(variant)
+    if headers is None:
+        raise ValueError(
+            f"정답에 변형 '{variant}'의 헤더가 없다(variant_headers 키: "
+            f"{sorted(answer.variant_headers)})"
+        )
+    ids = _column_ids(answer)
+    if len(headers) != len(ids):
+        raise ValueError(
+            f"변형 '{variant}' 헤더 길이({len(headers)})가 정답 컬럼 수({len(ids)})와 다르다"
+        )
+    return dict(zip(headers, ids, strict=True))
+
+
+def _mapped(name: str, id_map: dict[str, str]) -> str:
+    """예측 컬럼 이름을 컬럼 ID로 바꾼다. 모르는 이름은 그대로 둔다(일치 불가)."""
+    return id_map.get(name, name)
+
+
+def _truth_name_to_id(answer: BenchAnswer) -> dict[str, dict[str, str]]:
+    """테이블 이름 → (원본 컬럼 이름 → 컬럼 ID)."""
     return {
-        _flat(table.name, column.name): column.physical_type
+        table.name: {column.name: column.column_id for column in table.columns}
         for table in answer.tables
-        for column in table.columns
-    }
-
-
-def _predicted_columns(prediction: BenchPrediction) -> dict[str, str]:
-    return {
-        column.name: column.physical_type for table in prediction.tables for column in table.columns
     }
 
 
@@ -50,14 +76,23 @@ def _perfect_if_empty(truth: Sized, predicted: Sized) -> bool | None:
     return None
 
 
-def type_f1(answer: BenchAnswer, prediction: BenchPrediction) -> float:
-    """컬럼 단위 물리 타입 일치 F1.
+def type_f1(answer: BenchAnswer, prediction: BenchPrediction, variant: str) -> float:
+    """컬럼 단위 물리 타입 일치 F1. 컬럼 ID 하나당 한 번만 센다.
 
-    정밀도·재현율 모두 '타입까지 맞은 컬럼'만 센다. 이름만 알고 타입을 틀린
-    컬럼은 정밀도를 깎는다.
+    정밀도·재현율 모두 '타입까지 맞은 컬럼'만 센다. 조인 키를 부모·자식 두 테이블에
+    모두 예측해도 평면 컬럼은 하나이므로 한 번만 집계된다.
     """
-    truth = _truth_columns(answer)
-    predicted = _predicted_columns(prediction)
+    truth: dict[str, PhysicalType] = {}
+    for table in answer.tables:
+        for column in table.columns:
+            truth.setdefault(column.column_id, column.physical_type)
+    predicted: dict[str, PhysicalType] = {}
+    for predicted_table in prediction.tables:
+        for predicted_column in predicted_table.columns:
+            predicted.setdefault(
+                _mapped(predicted_column.name, _id_map(answer, variant)),
+                predicted_column.physical_type,
+            )
     empty = _perfect_if_empty(truth, predicted)
     if empty is not None:
         return 1.0 if empty else 0.0
@@ -70,15 +105,20 @@ def type_f1(answer: BenchAnswer, prediction: BenchPrediction) -> float:
 
 def _truth_pk_sets(answer: BenchAnswer) -> list[frozenset[str]]:
     return [
-        frozenset(_flat(table.name, column) for column in table.primary_key)
+        frozenset(_truth_name_to_id(answer)[table.name][name] for name in table.primary_key)
         for table in answer.tables
     ]
 
 
-def primary_key_f1(answer: BenchAnswer, prediction: BenchPrediction) -> float:
-    """PK 집합 일치 F1. 컬럼 집합이 같으면 같은 PK로 본다."""
+def primary_key_f1(answer: BenchAnswer, prediction: BenchPrediction, variant: str) -> float:
+    """PK 집합 일치 F1. 컬럼 ID 집합이 같으면 같은 PK로 본다."""
     truth = _truth_pk_sets(answer)
-    predicted = [frozenset(table.primary_key) for table in prediction.tables if table.primary_key]
+    id_map = _id_map(answer, variant)
+    predicted = [
+        frozenset(_mapped(name, id_map) for name in table.primary_key)
+        for table in prediction.tables
+        if table.primary_key
+    ]
     empty = _perfect_if_empty(truth, predicted)
     if empty is not None:
         return 1.0 if empty else 0.0
@@ -89,50 +129,30 @@ def primary_key_f1(answer: BenchAnswer, prediction: BenchPrediction) -> float:
 
 
 def _truth_fk_pairs(answer: BenchAnswer) -> set[tuple[frozenset[str], frozenset[str]]]:
-    return {
-        (
-            frozenset(_flat(fk.table, column) for column in fk.columns),
-            frozenset(_flat(fk.references_table, column) for column in fk.references_columns),
-        )
-        for table in answer.tables
-        for fk in table.foreign_keys
-    }
+    """FK = (자식 테이블 PK의 컬럼 ID 집합, FK 컬럼 ID 집합)."""
+    name_to_id = _truth_name_to_id(answer)
+    pairs: set[tuple[frozenset[str], frozenset[str]]] = set()
+    for table in answer.tables:
+        pk_ids = frozenset(name_to_id[table.name][name] for name in table.primary_key)
+        for fk in table.foreign_keys:
+            pairs.add(
+                (
+                    pk_ids,
+                    frozenset(name_to_id[table.name][name] for name in fk.columns),
+                )
+            )
+    return pairs
 
 
-def foreign_key_f1(answer: BenchAnswer, prediction: BenchPrediction) -> float:
-    """FK (자식 컬럼 집합, 부모 컬럼 집합) 일치 F1."""
+def foreign_key_f1(answer: BenchAnswer, prediction: BenchPrediction, variant: str) -> float:
+    """FK (자식 PK 컬럼 ID 집합, FK 컬럼 ID 집합) 쌍 일치 F1."""
     truth = _truth_fk_pairs(answer)
-    predicted = {
-        (frozenset(fk.columns), frozenset(fk.references_columns))
-        for table in prediction.tables
-        for fk in table.foreign_keys
-    }
-    empty = _perfect_if_empty(truth, predicted)
-    if empty is not None:
-        return 1.0 if empty else 0.0
-    hits = len(truth & predicted)
-    recall = hits / len(truth)
-    precision = hits / len(predicted) if predicted else 0.0
-    return _f1(precision, recall)
-
-
-def functional_dependency_recall(answer: BenchAnswer, prediction: BenchPrediction) -> float:
-    """FD 복원율(PLAN 지표): 정답 FD 중 예측이 찾은 비율. 식별은 (결정자 집합, 피결정자)."""
-    truth = _truth_fds(answer)
-    predicted = _predicted_fds(prediction)
-    empty = _perfect_if_empty(truth, predicted)
-    if empty is not None:
-        return 1.0 if empty else 0.0
-    return len(truth & predicted) / len(truth)
-
-
-def functional_dependency_f1(answer: BenchAnswer, prediction: BenchPrediction) -> float:
-    """FD F1 — 재현율만 쓰면 모든 컬럼 쌍을 FD로 나열한 예측도 100%가 된다.
-
-    종합 점수에는 이 F1을 넣어 정밀도를 함께 잰다.
-    """
-    truth = _truth_fds(answer)
-    predicted = _predicted_fds(prediction)
+    id_map = _id_map(answer, variant)
+    predicted: set[tuple[frozenset[str], frozenset[str]]] = set()
+    for table in prediction.tables:
+        pk_ids = frozenset(_mapped(name, id_map) for name in table.primary_key)
+        for fk in table.foreign_keys:
+            predicted.add((pk_ids, frozenset(_mapped(name, id_map) for name in fk.columns)))
     empty = _perfect_if_empty(truth, predicted)
     if empty is not None:
         return 1.0 if empty else 0.0
@@ -143,44 +163,86 @@ def functional_dependency_f1(answer: BenchAnswer, prediction: BenchPrediction) -
 
 
 def _truth_fds(answer: BenchAnswer) -> set[tuple[frozenset[str], str]]:
+    name_to_id = _truth_name_to_id(answer)
     return {
         (
-            frozenset(_flat(fd.table, column) for column in fd.determinant),
-            _flat(fd.table, fd.dependent),
+            frozenset(name_to_id[fd.table][name] for name in fd.determinant),
+            name_to_id[fd.table][fd.dependent],
         )
         for table in answer.tables
         for fd in table.functional_dependencies
     }
 
 
-def _predicted_fds(prediction: BenchPrediction) -> set[tuple[frozenset[str], str]]:
+def _predicted_fds(
+    prediction: BenchPrediction, id_map: dict[str, str]
+) -> set[tuple[frozenset[str], str]]:
     return {
-        (frozenset(fd.determinant), fd.dependent)
+        (frozenset(_mapped(name, id_map) for name in fd.determinant), _mapped(fd.dependent, id_map))
         for table in prediction.tables
         for fd in table.functional_dependencies
     }
 
 
-def adjusted_rand_index(answer: BenchAnswer, prediction: BenchPrediction) -> float:
+def functional_dependency_recall(
+    answer: BenchAnswer, prediction: BenchPrediction, variant: str
+) -> float:
+    """FD 복원율(PLAN 지표): 정답 FD 중 예측이 찾은 비율. 식별은 (결정자 집합, 피결정자)."""
+    truth = _truth_fds(answer)
+    predicted = _predicted_fds(prediction, _id_map(answer, variant))
+    empty = _perfect_if_empty(truth, predicted)
+    if empty is not None:
+        return 1.0 if empty else 0.0
+    return len(truth & predicted) / len(truth)
+
+
+def functional_dependency_f1(
+    answer: BenchAnswer, prediction: BenchPrediction, variant: str
+) -> float:
+    """FD F1 — 재현율만 쓰면 모든 컬럼 쌍을 FD로 나열한 예측도 100%가 된다.
+
+    종합 점수에는 이 F1을 넣어 정밀도를 함께 잰다.
+    """
+    truth = _truth_fds(answer)
+    predicted = _predicted_fds(prediction, _id_map(answer, variant))
+    empty = _perfect_if_empty(truth, predicted)
+    if empty is not None:
+        return 1.0 if empty else 0.0
+    hits = len(truth & predicted)
+    recall = hits / len(truth)
+    precision = hits / len(predicted) if predicted else 0.0
+    return _f1(precision, recall)
+
+
+def adjusted_rand_index(answer: BenchAnswer, prediction: BenchPrediction, variant: str) -> float:
     """컬럼-테이블 배정 일치도(ARI). 1.0 완전 일치, 0 무작위 수준, 음수 가능.
 
-    정답 배정은 평면 이름 → 정답 테이블, 예측 배정은 평면 이름 → 예측 테이블
-    인덱스로 두고 표준 ARI 식으로 계산한다.
+    조인 키는 그것이 PK인 테이블 소속으로 본다(예측에서도 PK로 쓰인 테이블
+    소속, PK로 쓰인 곳이 없으면 처음 나온 테이블 소속).
 
     최종값은 겹침 비율(겹친 컬럼 수 / 정답 컬럼 수)을 곱한다. 겹친 컬럼만으로
     ARI를 재면 컬럼 1개만 예측해도 만점이 나와, 예측을 늘릴수록 점수가 내려가는
     구간이 생긴다. 정답에 없는 예측 전용 컬럼(환각)은 여기서 벌점하지 않는다
     — 타입·PK 정밀도가 이미 깎는다.
     """
-    truth_assignment = {
-        _flat(table.name, column.name): table.name
-        for table in answer.tables
-        for column in table.columns
-    }
-    predicted_assignment: dict[str, int] = {}
-    for i, table in enumerate(prediction.tables):
+    truth_assignment: dict[str, str] = {}
+    name_to_id = _truth_name_to_id(answer)
+    for table in answer.tables:
         for column in table.columns:
-            predicted_assignment[column.name] = i
+            truth_assignment.setdefault(column.column_id, table.name)
+    for table in answer.tables:
+        for pk_name in table.primary_key:
+            truth_assignment[name_to_id[table.name][pk_name]] = table.name
+
+    id_map = _id_map(answer, variant)
+    predicted_assignment: dict[str, int] = {}
+    for i, predicted_table in enumerate(prediction.tables):
+        for predicted_column in predicted_table.columns:
+            predicted_assignment.setdefault(_mapped(predicted_column.name, id_map), i)
+    for i, predicted_table in enumerate(prediction.tables):
+        for pk_name in predicted_table.primary_key:
+            predicted_assignment[_mapped(pk_name, id_map)] = i
+
     common = [key for key in truth_assignment if key in predicted_assignment]
     if not common:
         return 0.0
@@ -217,7 +279,7 @@ def table_count_error(answer: BenchAnswer, prediction: BenchPrediction) -> int:
     return len(prediction.tables) - len(answer.tables)
 
 
-def schema_recovery_score(answer: BenchAnswer, prediction: BenchPrediction) -> float:
+def schema_recovery_score(answer: BenchAnswer, prediction: BenchPrediction, variant: str) -> float:
     """스키마 복원 종합 점수(0~100).
 
     다섯 지표(타입 F1·PK F1·FK F1·FD F1·ARI)의 균등 가중 평균이다.
@@ -225,10 +287,10 @@ def schema_recovery_score(answer: BenchAnswer, prediction: BenchPrediction) -> f
     가중치 변경은 소유자 검토 대상이다(후속 T-0012 A/B 검증).
     """
     metrics = (
-        type_f1(answer, prediction),
-        primary_key_f1(answer, prediction),
-        foreign_key_f1(answer, prediction),
-        functional_dependency_f1(answer, prediction),
-        max(adjusted_rand_index(answer, prediction), 0.0),
+        type_f1(answer, prediction, variant),
+        primary_key_f1(answer, prediction, variant),
+        foreign_key_f1(answer, prediction, variant),
+        functional_dependency_f1(answer, prediction, variant),
+        max(adjusted_rand_index(answer, prediction, variant), 0.0),
     )
     return 100.0 * sum(metrics) / len(metrics)

@@ -17,7 +17,7 @@ from bench.answer import (
     AnswerTable,
     BenchAnswer,
 )
-from bench.generator.packs import ColumnSpec, Pack
+from bench.generator.packs import ColumnSpec, FlatColumn, Pack
 
 KOREAN_FAMILY = ("김", "이", "박", "최", "정", "강", "조", "윤", "장", "임", "한", "오")
 KOREAN_GIVEN = (
@@ -107,6 +107,57 @@ def generate_pack(pack: Pack, seed: int) -> dict[str, list[dict[str, str]]]:
     return tables
 
 
+def flat_layout(pack: Pack) -> list[FlatColumn]:
+    """평면 파일의 컬럼 배치(컬럼 ID 순서)를 팩 선언에서 만든다.
+
+    컬럼 ID는 테이블 접두사가 없는 이름이다. FK 컬럼은 참조 대상 부모 PK와 같은
+    평면 컬럼을 가리키므로 조인 키는 처음 나오는 위치에 한 번만 놓인다(부모가
+    선언 뒤에 와도 자식 FK 위치가 첫 등장이 된다). 조인 키가 아닌 컬럼 이름이
+    팩 안에서 겹치면 헤더가 유일해질 수 없으므로 오류를 낸다. 부모 PK와 다른
+    이름의 FK 참조도 지원하지 않는다(아래 참조).
+    """
+    placed: dict[str, FlatColumn] = {}
+    order: list[FlatColumn] = []
+    for table in pack.tables:
+        for column in table.columns:
+            column_id = (column.ref or "").split(".")[1] if column.kind == "fk" else column.name
+            if column.kind == "fk" and column.name != column_id:
+                # 같은 부모 PK를 다른 이름으로 참조하는 FK(예: billing_customer_id →
+                # customers.customer_id)는 둘 다 같은 컬럼 ID로 합쳐져 조용히 사라진다.
+                # v0 평면화는 부모 PK와 같은 이름의 조인 키만 지원한다.
+                raise ValueError(
+                    f"이름이 다른 FK 참조는 v0 평면화에서 지원하지 않는다: "
+                    f"{table.name}.{column.name} → {column.ref}. "
+                    "부모 PK와 같은 이름을 쓰거나 팩 구조를 바꿔야 한다"
+                )
+            existing = placed.get(column_id)
+            if existing is not None:
+                if column.kind == "fk":
+                    continue  # 조인 키: 부모(또는 먼저 온 FK) 위치에 이미 있다
+                if (
+                    column.pk
+                    and existing.kind == "fk"
+                    and existing.ref_of == f"{table.name}.{column.name}"
+                ):
+                    continue  # 늦게 도착한 부모 PK: 자식 FK가 자리를 잡았다
+                raise ValueError(
+                    f"평면 컬럼 이름 충돌: '{column_id}'({table.name}.{column.name})이(가) "
+                    f"{existing.table}.{existing.name}과(와) 겹치는데 조인 키 관계가 아니다. "
+                    "팩 정의에서 이름을 다르게 써야 한다"
+                )
+            entry = FlatColumn(
+                column_id=column_id,
+                kind=column.kind,
+                is_key=column.pk or column.kind == "fk",
+                table=table.name,
+                name=column.name,
+                ref_of=column.ref or "",
+            )
+            placed[column_id] = entry
+            order.append(entry)
+    return order
+
+
 def _dependency_order(pack: Pack) -> list[str]:
     remaining = {table.name for table in pack.tables}
     order: list[str] = []
@@ -136,8 +187,8 @@ def flatten(
     부모 체인(leaf → root)뿐 아니라 체인 밖 차원 테이블(예: 주문상품→상품)도
     FK로 참조되면 모두 펼친다. 정답 복원 벤치는 평면 파일에 모든 원본 컬럼이
     있어야 성립하므로, 팩의 모든 테이블이 조인되지 않으면 오류를 낸다.
-    컬럼 이름은 '테이블_컬럼', 컬럼 순서는 팩 선언 순서를 따른다.
-    v0는 단일 컬럼 PK/FK만 지원한다.
+    헤더는 flat_layout의 컬럼 ID(접두사 없는 이름)를 그대로 쓰고, 조인 키는
+    한 번만 나온다. v0는 단일 컬럼 PK/FK만 지원한다.
     """
     pk_of = {table.name: table.pk[0] for table in pack.tables}
     index = {
@@ -152,7 +203,8 @@ def flatten(
         }
         for table in pack.tables
     }
-    header = [f"{table.name}_{column.name}" for table in pack.tables for column in table.columns]
+    layout = flat_layout(pack)
+    header = [column.column_id for column in layout]
     all_names = {table.name for table in pack.tables}
     flat_rows: list[list[str]] = []
     for leaf_row in tables[pack.leaf]:
@@ -169,14 +221,22 @@ def flatten(
         if set(merged) != all_names:
             missing = all_names - set(merged)
             raise ValueError(f"리프에서 닿지 않는 테이블: {sorted(missing)}")
-        flat_rows.append(
-            [merged[table.name][column.name] for table in pack.tables for column in table.columns]
-        )
+        flat_rows.append([merged[column.table][column.name] for column in layout])
     return header, flat_rows
 
 
-def answer_schema(pack: Pack, tables: dict[str, list[dict[str, str]]]) -> BenchAnswer:
-    """정답 스키마. 형식 정의는 bench/answer.py(BenchAnswer)를 따른다."""
+def answer_schema(
+    pack: Pack,
+    tables: dict[str, list[dict[str, str]]],
+    *,
+    variant_headers: dict[str, list[str]],
+) -> BenchAnswer:
+    """정답 스키마. 형식 정의는 bench/answer.py(BenchAnswer)를 따른다.
+
+    FK 컬럼의 column_id는 참조 대상 부모 PK의 컬럼 ID다(자식 FK와 부모 PK는
+    같은 평면 컬럼을 가리킨다). variant_headers는 변형별 필드 헤더 행으로,
+    채점이 예측 컬럼 이름을 컬럼 ID로 바꾸는 위치 대응에 쓴다.
+    """
     answer_tables: list[AnswerTable] = []
     for table in pack.tables:
         primary_key = table.pk
@@ -204,6 +264,9 @@ def answer_schema(pack: Pack, tables: dict[str, list[dict[str, str]]]) -> BenchA
                 columns=[
                     AnswerColumn(
                         name=column.name,
+                        column_id=(
+                            (column.ref or "").split(".")[1] if column.kind == "fk" else column.name
+                        ),
                         physical_type=PHYSICAL_TYPE_OF_KIND[column.kind],
                         is_foreign_key=column.kind == "fk",
                     )
@@ -214,7 +277,11 @@ def answer_schema(pack: Pack, tables: dict[str, list[dict[str, str]]]) -> BenchA
                 row_count=len(tables[table.name]),
             )
         )
-    return BenchAnswer(pack=pack.name, tables=answer_tables)
+    return BenchAnswer(
+        pack=pack.name,
+        tables=answer_tables,
+        variant_headers=variant_headers,
+    )
 
 
 def write_csv(

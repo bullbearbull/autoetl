@@ -1,8 +1,9 @@
-"""벤치 정답 파일 형식 v0 (answer.json).
+"""벤치 정답 파일 형식 v0.2 (answer.json).
 
-T-0008 생성기가 내보내던 잠정 형식을 정식화한다. 정답은 원본 관계형 스키마 그
-자체다: 테이블, 컬럼의 물리 타입, 기본 키, 외래 키, 함수 종속, 컬럼→테이블 배정.
-예측(채점 대상)은 같은 구조를 쓴다(autoetl이 복원한 스키마를 이 형식으로 옮긴다).
+T-0008 생성기가 내보내던 잠정 형식을 정식화하고, T-0015에서 채점 키를 헤더
+문자열에서 컬럼 ID로 바꿨다. 정답은 원본 관계형 스키마 그 자체다: 테이블,
+컬럼의 물리 타입, 기본 키, 외래 키, 함수 종속, 컬럼→테이블 배정. 예측(채점
+대상)은 같은 구조를 쓰되 컬럼 이름은 채점 대상 변형 CSV의 헤더 문자열이다.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from pydantic import Field
 
 from autoetl.contracts.common import ContractModel, PhysicalType
 
-ANSWER_VERSION = "0.1.0"
+ANSWER_VERSION = "0.2.0"
 
 PHYSICAL_TYPE_OF_KIND: dict[str, PhysicalType] = {
     "id": PhysicalType.STRING,
@@ -31,6 +32,9 @@ PHYSICAL_TYPE_OF_KIND: dict[str, PhysicalType] = {
 
 class AnswerColumn(ContractModel):
     name: str
+    column_id: str = Field(
+        description="평면 파일의 컬럼 ID(접두사 없는 이름). FK는 참조 대상 부모 PK의 ID다",
+    )
     physical_type: PhysicalType
     is_foreign_key: bool = False
 
@@ -66,13 +70,21 @@ class BenchAnswer(ContractModel):
     answer_version: str = ANSWER_VERSION
     pack: str
     tables: list[AnswerTable] = Field(min_length=1)
+    variant_headers: dict[str, list[str]] = Field(
+        description="변형 이름 → 그 변형 CSV의 필드 헤더 행(컬럼 순서는 정답과 동일). "
+        "채점이 예측 컬럼 이름을 컬럼 ID로 바꾸는 위치 대응에 쓴다",
+    )
 
 
-# ── 예측 형식: 같은 구조를 재사용한다 ────────────────────────────────────────
+# ── 예측 형식: 채점에 필요한 최소 구조 ─────────────────────────────────────
 
 
-class PredictedColumn(AnswerColumn):
-    pass
+class PredictedColumn(ContractModel):
+    """예측 컬럼. name은 채점 대상 변형 CSV의 헤더 문자열이다."""
+
+    name: str
+    physical_type: PhysicalType
+    is_foreign_key: bool = False
 
 
 class PredictedTable(ContractModel):

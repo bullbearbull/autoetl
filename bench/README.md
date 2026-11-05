@@ -1,7 +1,7 @@
 # 벤치마크 v0 — 정답 형식, 채점 기준, 모델 판정
 
-기준일 2026-11-05 · 근거: docs/PLAN.md 벤치마크 절 · 코드: `bench/answer.py`,
-`bench/scoring.py`, `bench/criteria.py`, `bench/generator/`
+기준일 2026-11-06 · 근거: docs/PLAN.md 벤치마크 절 · 코드: `bench/answer.py`,
+`bench/scoring.py`, `bench/criteria.py`, `bench/baselines.py`, `bench/generator/`
 
 이 문서의 판정 수치와 가중치는 초기 제안값이고, 변경은 소유자 검토 대상이다
 (AGENTS.md 3절 — 벤치 판정 기준과 최소·권장 모델).
@@ -11,42 +11,61 @@
 ```
 bench/datasets/<팩>-<시드>/
   clean.csv           잡음 없는 평면 원본
-  missing.csv         결측 주입('-', 'N/A', '해당없음')
+  missing.csv         결측 주입('-', 'N/A', '해당없음') — PK·조인 키는 제외
   format_mix.csv      날짜 4형식·천 단위 콤마·'원' 표기 혼재
   leading_zero.csv    고정 자릿수 코드의 앞자리 0 일부 제거
-  multi_header.csv    두 행 헤더(그룹 | 필드)
+  multi_header.csv    두 행 헤더(1행 = 컬럼 성격 그룹, 2행 = 필드)
   cp949.csv           CP949 인코딩
-  hard.csv            위 잡음 전부 + CP949
-  answer.json         정답 스키마(BenchAnswer)
+  hard.csv            위 잡음 전부 + CP949 + 이름 없는 필드 헤더(col_01 형식)
+  answer.json         정답 스키마(BenchAnswer 0.2.0)
   manifest.json       시드·변형·라이선스·규모
   README.md           사람용 설명(라이선스 포함)
 ```
 
+평면 헤더는 테이블 접두사가 없는 컬럼 이름이고 조인 키(PK=FK)는 부모 PK 이름
+하나로 처음 나오는 위치에 한 번만 나온다(orders_kr 19컬럼, music 13컬럼).
+PK·조인 키 컬럼에는 결측을 넣지 않는다(공유 answer.json과 어긋나지 않게).
 생성: `uv run python -m bench.generator --seed 42`. 생성물은 커밋하지 않는다.
 v0 팩은 전부 합성 데이터다(라이선스 제약 없음). 실제 공개 DB(Chinook·Northwind·
 Sakila) 수입은 데이터별 이용 조건 확인 후 v1에 추가한다.
 
 ## 2. 정답 형식 (answer.json, `bench/answer.py`)
 
-- `answer_version`: 형식 버전(0.1.0).
+- `answer_version`: 형식 버전(0.2.0).
 - `tables[]`: 테이블마다 `name`, `primary_key`(컬럼 목록), `columns[]`
-  (`name`, `physical_type` — contracts.PhysicalType, `is_foreign_key`),
-  `foreign_keys[]` (`table`, `columns`, `references_table`, `references_columns`),
-  `functional_dependencies[]` (`table`, `determinant[]`, `dependent`),
-  `row_count`.
+  (`name`, `column_id`, `physical_type` — contracts.PhysicalType,
+  `is_foreign_key`), `foreign_keys[]` (`table`, `columns`, `references_table`,
+  `references_columns`), `functional_dependencies[]` (`table`, `determinant[]`,
+  `dependent`), `row_count`.
+- `column_id`: 평면 파일의 컬럼 ID(테이블 접두사가 없는 이름). FK 컬럼의
+  column_id는 참조 대상 부모 PK의 컬럼 ID다 — 자식 FK와 부모 PK는 같은 평면
+  컬럼을 가리킨다.
+- `variant_headers`: 변형 이름 → 그 변형 CSV의 필드 헤더 행(다중 헤더는 마지막
+  헤더 행). 컬럼 순서는 정답 컬럼과 동일하다.
 - v0 FD는 원본 PK → 비키 컬럼 형태만 담는다.
 
-**채점 키 규칙(v0 합의)**: 채점용 예측(`BenchPrediction`)의 컬럼 이름은 평면
-입력 파일의 헤더 이름, 곧 정답의 `테이블_컬럼`을 그대로 보존한다. 예측 테이블
+**채점 키 규칙(T-0015)**: 채점용 예측(`BenchPrediction`)의 컬럼 이름은 채점
+대상 변형 CSV의 헤더 문자열이다. 채점은 정답의 `variant_headers`와 위치가 같은
+컬럼 ID로 바꿔서 하므로, 헤더만으로 정답 테이블을 알 수 없다. 예측 테이블
 이름은 채점에 쓰지 않는다.
+
+- **타입 F1**: 컬럼 ID 하나당 한 번만 센다(조인 키를 부모·자식에 모두 예측해도
+  평면 컬럼은 하나).
+- **PK F1**: PK 컬럼 ID 집합이 같은지로 매칭.
+- **FK F1**: **(자식 테이블 PK의 컬럼 ID 집합, FK 컬럼 ID 집합)** 쌍 일치.
+  조인 키가 부모·자식에서 같은 평면 컬럼이라 (자식 컬럼, 부모 컬럼) 쌍으로는
+  구분되지 않기 때문이다.
+- **배정(ARI)**: 조인 키는 그것이 PK인 테이블 소속. 예측에서 한 컬럼이 여러
+  테이블에 나오면 PK로 쓰인 테이블 소속으로 보고, PK로 쓰인 곳이 없으면 처음
+  나온 테이블 소속이다.
 
 ## 3. 지표 계산식 (`bench/scoring.py`)
 
 | 지표 | 계산 |
 | --- | --- |
-| 타입 F1 | 컬럼 단위 물리 타입 일치의 정밀도·재현율 F1(타입을 틀린 컬럼은 정밀도·재현율 모두에서 감점) |
-| PK F1 | PK 컬럼 집합이 같은지로 매칭한 F1 |
-| FK F1 | (자식 컬럼 집합, 부모 컬럼 집합) 쌍 일치 F1 |
+| 타입 F1 | 컬럼 ID 단위 물리 타입 일치의 정밀도·재현율 F1(타입을 틀린 컬럼은 정밀도·재현율 모두에서 감점) |
+| PK F1 | PK 컬럼 ID 집합이 같은지로 매칭한 F1 |
+| FK F1 | (자식 PK 컬럼 ID 집합, FK 컬럼 ID 집합) 쌍 일치 F1 |
 | FD 복원율 | 정답 FD 중 예측이 찾은 비율(재현율, PLAN 지표) |
 | FD F1 | FD 정밀도·재현율 F1 — 모든 컬럼 쌍을 FD로 나열하는 스팸 예측을 막는다 |
 | 배정 ARI | 컬럼→테이블 배정의 조정 랜드 지수(1.0 완전 일치, 0 무작위 수준) × **겹침 비율**(겹친 컬럼 수 / 정답 컬럼 수). 컬럼 1개만 예측해도 만점이 나와 예측을 늘릴수록 점수가 내려가는 구간을 없앤다. 정답에 없는 예측 전용 컬럼은 벌점하지 않는다(타입·PK 정밀도가 깎는다) |
@@ -60,6 +79,36 @@ Sakila) 수입은 데이터별 이용 조건 확인 후 v1에 추가한다.
 **균등 가중** 평균 × 100(FD는 복원율이 아니라 F1을 넣는다). DDL 성공률·적재
 성공률·데이터 손실률·안정성(N회 실행 스키마 차이)·JSON 준수율·카나리 유출·비용·
 자원은 실행기(런너, P5)가 실측값을 채운다.
+
+### 기준선 점수 (`bench/baselines.py`)
+
+데이터를 읽지 않고 만들 수 있는 최소 예측 두 종류의 종합 점수다(시드 42).
+헤더에서 정답 테이블 정보를 제거한 뒤에도 '이름 규칙만으로 100점'이 나오지
+않는지를 확인하는 판정 기준점이며, 문서↔코드 일치 테스트가 표의 숫자를
+재계산해 대조한다.
+
+- **단일 와이드**: 모든 컬럼을 STRING 타입의 한 테이블로(정규화 0 시도).
+- **이름 규칙**: '_id'로 끝나는 컬럼은 각각 PK 단독 테이블, 나머지는 한 와이드
+  테이블. 타입은 전부 STRING.
+- **위치 끊기**: '_id'로 끝나는 컬럼 위치마다 테이블을 끊고 첫 컬럼을 PK로.
+  헤더 이름에 든 실제 신호를 쓴 예측 중 가장 강한 편이다.
+- hard 변형은 헤더가 col_01 형식이라 이름 신호가 없어 셋 다 단일 와이드와
+  같아진다.
+
+| 팩 | 변형 | 단일 와이드 | 이름 규칙 | 위치 끊기 |
+| --- | --- | --- | --- | --- |
+| orders_kr | clean | 21.68 | 31.46 | 53.68 |
+| orders_kr | hard | 21.68 | 21.68 | 21.68 |
+| music | clean | 23.85 | 30.99 | 53.85 |
+| music | hard | 23.85 | 23.85 | 23.85 |
+
+헤더 이름에는 실제 신호가 있다 — 위치 끊기는 데이터를 한 줄도 읽지 않고
+절반가량(53~54점)까지 도달한다. FK·FD·타입과 나머지 배정은 데이터를 읽어야만
+얻을 수 있고, 100점과의 거리가 T-0015 변경의 요점이다. hard의 그룹 행·필드
+행만 쓰는 위치 끊기 공격은 clean 이름 신호(위치 끊기)보다 낮게 막아 뒀다
+(테스트가 대조한다). 다중 헤더 그룹 행은 키 컬럼을 다른 컬럼과 구별하지
+않는다(id·fk도 '수치') — '식별자'를 따로 표시하면 그 위치가 곧 테이블 경계가
+되기 때문이다.
 
 ## 4. 필수 관문 (`bench/criteria.py`)
 
