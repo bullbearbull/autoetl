@@ -10,7 +10,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import ipaddress
+from collections.abc import Mapping, Sequence
 from enum import Enum
 from types import MappingProxyType
 
@@ -105,7 +106,7 @@ LOG_LEVEL_POLICY: Mapping[LogLevel, LogPolicy] = MappingProxyType(
             name="기밀",
             contains=(
                 "셀 값(데이터 L0·L1 원문, 또는 가림 처리를 거친 모든 값), "
-                "데이터가 포함된 프롬프트·응답"
+                "데이터 L0·L1 원문만 담은 프롬프트·응답"
             ),
             may_record=True,
             requires_explicit_debug=True,
@@ -119,7 +120,8 @@ LOG_LEVEL_POLICY: Mapping[LogLevel, LogPolicy] = MappingProxyType(
             name="제한",
             contains=(
                 "데이터 L2·L3 컬럼의 원문 값(전화번호·이메일·이름·주소·계좌·"
-                "주민등록번호·카드번호 등). 비밀 키·API 키"
+                "주민등록번호·카드번호 등), 그 원문을 담은 프롬프트·응답. "
+                "비밀 키·API 키"
             ),
             may_record=False,
             retention="원문은 기록 금지. 가림 처리(형태 마스크 등)를 거치면 L2로 기록 가능",
@@ -155,6 +157,40 @@ def log_level_for_value(data_level: SensitivityLevel, *, masked: bool) -> LogLev
     return LogLevel.RESTRICTED
 
 
+def prompt_log_level(
+    raw_value_levels: Sequence[SensitivityLevel] = (),
+    *,
+    masked_value_present: bool = False,
+    secret_value_present: bool = False,
+    at_least: LogLevel | None = None,
+) -> LogLevel:
+    """프롬프트·응답 원문의 로그 등급: 담긴 값 가운데 가장 높은 등급을 따른다.
+
+    문서 1.2·1.3절 충돌 해소 규칙(원문의 등급은 내용물을 따른다).
+
+    - 데이터 L2·L3 컬럼 원문이 하나라도 담겼으면 로그 L3(기록 금지).
+    - 데이터 L0·L1 원문만 담겼으면 로그 L2. 가림 처리한 값만 있어도 L2
+      (log_level_for_value의 masked 규칙과 같다).
+    - 셀 값 원문이 없이 메타데이터만 있으면 로그 L1.
+    - 비밀값(API 키·토큰 등 데이터 컬럼 밖의 값)이 담겼다는 표시만으로 로그 L3
+      (secret_value_present — 비밀 키는 정책 1.2절에서 로그 L3이다).
+    - at_least: 응답 판정에 쓰는 하한. LLM 응답은 받은 프롬프트의 값을 되풀이할
+      수 있어 응답의 등급은 요청 프롬프트의 등급보다 낮아질 수 없다. 요청
+      프롬프트의 등급을 넘기면 결과는 그 등급 아래로 내려가지 않는다.
+    """
+    if secret_value_present:
+        level = LogLevel.RESTRICTED
+    elif raw_value_levels:
+        level = max(log_level_for_value(value, masked=False) for value in raw_value_levels)
+    elif masked_value_present:
+        level = LogLevel.CONFIDENTIAL
+    else:
+        level = LogLevel.INTERNAL
+    if at_least is not None and at_least > level:
+        return at_least
+    return level
+
+
 SENSITIVE_TYPE_DEFAULT_LEVEL: Mapping[SensitiveType, SensitivityLevel] = MappingProxyType(
     {
         SensitiveType.RESIDENT_REGISTRATION_NUMBER: SensitivityLevel.L3,
@@ -175,6 +211,107 @@ SENSITIVE_TYPE_DEFAULT_LEVEL: Mapping[SensitiveType, SensitivityLevel] = Mapping
 비밀 키·API 키는 컬럼이 아니라 설정에서 오는 값이라 SensitiveType에 없다(로그 L3
 고정). 내부 식별자(데이터 L1)를 SensitiveType으로 표현하는 계약 확장은 별도 과업.
 """
+
+
+class TrustZone(str, Enum):
+    """엔드포인트의 신뢰 구역(문서 2.2절)."""
+
+    LOOPBACK = "loopback"  # 이 PC(루프백 대역)
+    REGISTERED_INTERNAL = "registered_internal"  # 사용자가 등록·확인한 사내 서버
+    EXTERNAL = "external"  # 그 밖의 전부(공인 주소, 등록 안 한 사설 주소, DNS 이름, 터널)
+
+
+PRIVATE_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("fc00::/7"),
+)
+"""사내 서버 등록이 가능한 사설 대역. 루프백(127.0.0.0/8)과 링크 로컬은 넣지 않는다.
+
+루프백은 '이 PC'라 등록 없이 신뢰 구역이고, 링크 로컬(169.254.0.0/16)은 사내
+엔드포인트로 쓰는 경우가 드물어 닫아 둔다(실수로 열리는 쪽보다 안전하다).
+"""
+
+
+def _parsed_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """주소 문자열을 파싱한다. IPv4 매핑 IPv6(::ffff:x.x.x.x)은 IPv4로 정규화한다.
+
+    DNS 이름처럼 IP 주소가 아닌 문자열은 None(해석은 P2에서 연결). 이 판정은
+    실패 닫힘이다 — 파싱이 안 되면 외부로 판정된다.
+    """
+    try:
+        address = ipaddress.ip_address(host.strip())
+    except ValueError:
+        return None
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    return address
+
+
+def is_loopback_address(host: str) -> bool:
+    """이 PC(루프백 대역 127.0.0.0/8, ::1)인지."""
+    address = _parsed_ip(host)
+    return address is not None and address.is_loopback
+
+
+def is_private_address(host: str) -> bool:
+    """사설 IP 대역(RFC1918·IPv6 ULA)인지. 루프백·링크 로컬은 포함하지 않는다."""
+    address = _parsed_ip(host)
+    return address is not None and any(address in network for network in PRIVATE_NETWORKS)
+
+
+def is_registrable_internal(host: str) -> bool:
+    """사내 서버로 등록할 수 있는 주소인지: 사설 대역만 허용, 공인 주소는 거부한다."""
+    return is_private_address(host)
+
+
+def trust_zone(host: str, *, registered_internal: Sequence[str] = ()) -> TrustZone:
+    """엔드포인트의 신뢰 구역을 판정한다.
+
+    - 루프백: 등록 없이 신뢰 구역(이 PC).
+    - 등록 목록에 있고 사설 주소인 경우: 등록 사내. 등록 목록에는 사용자가 설정에서
+      직접 등록하고 경고를 확인한 주소만 올 수 있다(확인 절차·화면은 P3).
+    - 그 밖의 전부(등록하지 않은 사설 주소, 공인 주소, DNS 이름, 터널): 외부.
+      등록 목록에 공인 주소가 섞여 있어도 여기서는 무시하고 외부로 판정한다(방어).
+    """
+    address = _parsed_ip(host)
+    if address is None:
+        return TrustZone.EXTERNAL
+    if address.is_loopback:
+        return TrustZone.LOOPBACK
+    if any(_parsed_ip(entry) == address for entry in registered_internal) and (
+        is_private_address(host)
+    ):
+        return TrustZone.REGISTERED_INTERNAL
+    return TrustZone.EXTERNAL
+
+
+def allows_raw_value(zone: TrustZone, data_level: SensitivityLevel, mode: SecureMode) -> bool:
+    """셀 원문 값을 zone 엔드포인트로 보낼 수 있는지(문서 2.2 구역별 허용 표).
+
+    - 루프백(이 PC): 모든 데이터 등급·모든 모드에서 허용. L3 원문을 받는 유일한 구역.
+    - 등록 사내: 데이터 L0~L2 원문 허용, L3 원문은 어떤 모드에서도 거부.
+    - 외부: Off 모드에서 비민감(L0·L1) 원문만 허용. L2는 Off에서도 마스킹 후.
+    """
+    if zone is TrustZone.LOOPBACK:
+        return True
+    if zone is TrustZone.REGISTERED_INTERNAL:
+        return data_level is not SensitivityLevel.L3
+    return mode is SecureMode.OFF and data_level in (
+        SensitivityLevel.L0,
+        SensitivityLevel.L1,
+    )
+
+
+def allows_metadata(zone: TrustZone, mode: SecureMode) -> bool:
+    """메타데이터 전송 허용 여부. Strict의 외부 전송 0건 규칙을 반영한다.
+
+    신뢰 구역(루프백·등록 사내)은 모든 모드에서 메타데이터를 받을 수 있다.
+    """
+    if zone is not TrustZone.EXTERNAL:
+        return True
+    return mode is not SecureMode.STRICT
 
 
 class TransmissionRule(FrozenPolicy):
@@ -212,16 +349,18 @@ TRANSMISSION_RULES: Mapping[SecureMode, TransmissionRule] = MappingProxyType(
             sends_metadata=True,
             sends_raw_values=False,
             category_label_allowlist=True,
-            note="메타데이터만. 컬럼명은 옵션 별칭, 범주는 토큰(허용 목록 라벨은 예외), "
-            "min/max는 구간화. 원문 판단은 로컬 모델의 추상 설명으로 대체",
+            note="외부에는 메타데이터만. 컬럼명은 옵션 별칭, 범주는 토큰(허용 목록 라벨은 "
+            "예외), min/max는 구간화. 원문 판단은 로컬 모델의 추상 설명으로 대체. "
+            "신뢰 구역(루프백·등록 사내) 모델에는 원문을 보낼 수 있다(2.2절 구역 표)",
         ),
         SecureMode.STRICT: TransmissionRule(
             mode=SecureMode.STRICT,
             sends_samples=False,
             sends_metadata=False,
             sends_raw_values=False,
-            note="외부 전송 0건. 전 과정 로컬·사내 신뢰 구역 모델. "
-            "외부 터널(예: unsloth --secure) 경유 엔드포인트는 불허",
+            note="외부 전송 0건. 이 PC와 등록한 사내 서버만 쓴다(PLAN의 '전 과정 로컬 "
+            "모델'을 '이 PC 또는 등록한 사내 서버의 모델'로 해석). 외부 터널(예: "
+            "unsloth --secure) 경유 엔드포인트는 어떤 모드에서도 신뢰 구역이 아니다",
         ),
     }
 )
