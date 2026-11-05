@@ -55,6 +55,7 @@ strict = true
 files = [
     "src",
     "tests",
+    "bench",
     "tools/license_check.py",
     "tools/export_contracts.py",
     "tools/build_sop.py",
@@ -62,4 +63,5 @@ files = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-q"
