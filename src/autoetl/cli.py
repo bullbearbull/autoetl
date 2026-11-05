@@ -17,6 +17,18 @@ from autoetl.contracts import Purpose, Report
 from autoetl.core.pipeline import run_pipeline
 
 
+def _targets_same_file(out: Path, source: Path) -> bool:
+    """--out이 입력 파일을 가리키는지 검사한다.
+
+    resolve() 비교는 심볼릭 링크와 같은 경로를 잡지만 하드 링크·대소문자 무시
+    파일시스템(macOS 기본 등)의 다른 표기는 못 잡는다. samefile(아이노드 비교)을
+    함께 써서 둘 다 막는다. samefile은 양쪽 파일이 있을 때만 쓸 수 있다.
+    """
+    if out.resolve() == source.resolve():
+        return True
+    return out.exists() and source.exists() and out.samefile(source)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="autoetl", description="결정론 엔진과 LLM 하네스 기반 로컬 ETL 파이프라인"
@@ -49,8 +61,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.file.exists():
         print(f"입력 파일이 없다: {args.file}", file=sys.stderr)
         return 2
-    if args.out is not None and args.out.resolve() == args.file.resolve():
-        print("--out이 입력 파일과 같은 경로다. 원본을 덮어쓰지 않는다.", file=sys.stderr)
+    if args.out is not None and _targets_same_file(args.out, args.file):
+        print("--out이 입력 파일과 같은 파일이다. 원본을 덮어쓰지 않는다.", file=sys.stderr)
         return 2
 
     try:
@@ -64,9 +76,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     except ValidationError:
+        # 실제 데이터 값은 공개 이슈 트래커로 보내지 않는다(정책 1.2절 — 데이터
+        # L2·L3 원문은 저장소 밖으로 나갈 수 없다). 요청하는 건 로그 L0·L1 정보만.
         print(
             "파이프라인 산출물이 계약을 통과하지 못했다(내부 오류). "
-            "입력 파일과 명령을 이슈로 알려달라.",
+            "이슈에는 실제 데이터 파일을 첨부하지 말고 실행 명령·autoetl 버전·"
+            "컬럼 수·헤더 형태(이름 형태만)를 알려달라.",
             file=sys.stderr,
         )
         return 3

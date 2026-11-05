@@ -155,7 +155,7 @@ def test_spam_fds_keep_recall_but_lose_f1() -> None:
     )
 
 
-def test_ari_single_common_column_is_trivial() -> None:
+def test_ari_single_common_column_is_scaled_by_coverage() -> None:
     answer = demo_answer()
     partial = BenchPrediction(
         tables=[
@@ -165,8 +165,112 @@ def test_ari_single_common_column_is_trivial() -> None:
             )
         ]
     )
-    # 겹치는 컬럼 1개: 분모 0 없이 자명 일치로 본다.
-    assert adjusted_rand_index(answer, partial) == 1.0
+    # 겹치는 컬럼 1개: 배정 비교는 자명 일치(1.0)지만 커버리지 1/5가 곱해진다.
+    assert adjusted_rand_index(answer, partial) == pytest.approx(1.0 / 5)
+
+
+def test_ari_scales_with_overlap_ratio() -> None:
+    answer = demo_answer()
+    # 테이블 a의 컬럼 2개만, 같은 테이블로 정확히 배정 → 기본 ARI 1.0에 커버리지 2/5를 곱한다
+    partial = BenchPrediction(
+        tables=[
+            PredictedTable(
+                columns=[
+                    PredictedColumn(name="a_a_id", physical_type=PhysicalType.STRING),
+                    PredictedColumn(name="a_a_name", physical_type=PhysicalType.STRING),
+                ],
+                primary_key=["a_a_id"],
+            )
+        ]
+    )
+    assert adjusted_rand_index(answer, partial) == pytest.approx(2.0 / 5)
+    # 예측을 늘릴수록 점수가 내려가는 구간이 없어져야 한다(소유자 재리뷰 지적).
+    one_column = BenchPrediction(
+        tables=[
+            PredictedTable(
+                columns=[PredictedColumn(name="a_a_id", physical_type=PhysicalType.STRING)],
+                primary_key=["a_a_id"],
+            )
+        ]
+    )
+    assert adjusted_rand_index(answer, one_column) < adjusted_rand_index(answer, partial)
+
+
+def test_ari_full_coverage_prediction_beats_single_column_composite() -> None:
+    # 재리뷰 재현: 컬럼 1개만 예측한 종합 점수가 전부 담은 예측을 앞서는 순위 뒤집임.
+    answer = demo_answer()
+    one_column = BenchPrediction(
+        tables=[
+            PredictedTable(
+                columns=[PredictedColumn(name="a_a_id", physical_type=PhysicalType.STRING)],
+                primary_key=["a_a_id"],
+            )
+        ]
+    )
+    merged_columns = [
+        PredictedColumn(name=f"{table.name}_{column.name}", physical_type=column.physical_type)
+        for table in answer.tables
+        for column in table.columns
+    ]
+    merged = BenchPrediction(
+        tables=[PredictedTable(columns=merged_columns, primary_key=["a_a_id"])]
+    )
+    assert schema_recovery_score(answer, one_column) < schema_recovery_score(answer, merged)
+
+
+def test_empty_truth_fds_penalize_spam() -> None:
+    # FD가 없는 정답(FK도 없음): 스팸 FD를 늘어놓으면 0점, 비워 두면 만점.
+    fd_free = BenchAnswer(
+        pack="demo",
+        tables=[
+            AnswerTable(
+                name="solo",
+                primary_key=["id"],
+                columns=[AnswerColumn(name="id", physical_type=PhysicalType.STRING)],
+                row_count=1,
+            )
+        ],
+    )
+
+    def solo_prediction(
+        *,
+        functional_dependencies: list[AnswerFunctionalDependency] | None = None,
+        foreign_keys: list[AnswerForeignKey] | None = None,
+    ) -> BenchPrediction:
+        return BenchPrediction(
+            tables=[
+                PredictedTable(
+                    columns=[PredictedColumn(name="solo_id", physical_type=PhysicalType.STRING)],
+                    primary_key=["solo_id"],
+                    functional_dependencies=functional_dependencies or [],
+                    foreign_keys=foreign_keys or [],
+                )
+            ]
+        )
+
+    assert functional_dependency_recall(fd_free, solo_prediction()) == 1.0
+    assert functional_dependency_f1(fd_free, solo_prediction()) == 1.0
+    assert foreign_key_f1(fd_free, solo_prediction()) == 1.0
+
+    spam_fds = [
+        AnswerFunctionalDependency(table="", determinant=["solo_id"], dependent="solo_id")
+        for _ in range(462)
+    ]
+    assert (
+        functional_dependency_recall(fd_free, solo_prediction(functional_dependencies=spam_fds))
+        == 0.0
+    )
+    assert (
+        functional_dependency_f1(fd_free, solo_prediction(functional_dependencies=spam_fds)) == 0.0
+    )
+
+    spam_fks = [
+        AnswerForeignKey(
+            table="", columns=["solo_id"], references_table="", references_columns=["solo_id"]
+        )
+        for _ in range(30)
+    ]
+    assert foreign_key_f1(fd_free, solo_prediction(foreign_keys=spam_fks)) == 0.0
 
 
 def test_missing_table_lowers_ari_and_pk() -> None:
