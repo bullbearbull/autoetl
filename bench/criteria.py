@@ -106,6 +106,8 @@ def classify_models(runs: list[RunMetrics]) -> ModelClassification:
     - 최소: 기준선 x 0.85 이상인 후보 중 파라미터가 가장 작은 것.
     - 권장: 기준선 x 0.95 이상인 후보 중 점수/비용 지표가 가장 높은 것.
     - 관문을 통과한 모델이 없거나 기준선에 닿는 후보가 없으면 None(판정 보류).
+    - 기준선이 0 이하면 판정을 보류한다 — 0 >= 0 x 0.85가 성립해 최소·권장이
+      의미 없이 지정되는 일을 막는다(T-0016).
     """
     if not runs:
         return ModelClassification(
@@ -115,6 +117,13 @@ def classify_models(runs: list[RunMetrics]) -> ModelClassification:
             reason="실행 결과가 없다",
         )
     best_score = max(run.score for run in runs)
+    if best_score <= 0:
+        return ModelClassification(
+            minimum_model=None,
+            recommended_model=None,
+            best_score=best_score,
+            reason=f"전체 최고 점수(기준선)가 {best_score:.1f}점으로 0 이하라 판정을 보류한다",
+        )
     qualified = [run for run in runs if check_gates(run).passed]
     if not qualified:
         return ModelClassification(

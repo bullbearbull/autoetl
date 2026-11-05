@@ -279,6 +279,49 @@ def test_ari_scales_with_overlap_ratio() -> None:
     )
 
 
+# ── 중복 예측 페널티(T-0016) ─────────────────────────────────────────────────
+
+
+def test_duplicate_pk_predictions_drop_precision() -> None:
+    answer = demo_answer()
+    # 같은 PK {a_id}를 10개 테이블에 걸쳐 예측: 정밀도 1/10, 재현율 1/2.
+    prediction = BenchPrediction(
+        tables=[
+            PredictedTable(
+                columns=[PredictedColumn(name="a_id", physical_type=PhysicalType.STRING)],
+                primary_key=["a_id"],
+            )
+        ]
+        * 10
+    )
+    assert primary_key_f1(answer, prediction, "clean") == pytest.approx(
+        2 * (1 / 10) * 0.5 / (1 / 10 + 0.5)
+    )
+
+
+def test_duplicate_fk_predictions_drop_precision() -> None:
+    answer = demo_answer()
+    prediction = perfect_prediction(answer)
+    # 테이블 b(FK 1개 보유)를 9번 더 예측: FK 정밀도 1/10, 재현율 1.
+    prediction.tables.extend([prediction.tables[1]] * 9)
+    assert foreign_key_f1(answer, prediction, "clean") == pytest.approx(
+        2 * (1 / 10) * 1.0 / (1 / 10 + 1.0)
+    )
+
+
+def test_duplicate_fd_predictions_drop_precision() -> None:
+    answer = demo_answer()
+    prediction = perfect_prediction(answer)
+    # 정답 FD 3개를 각각 3번씩(총 9개) 예측: 정밀도 3/9, 재현율 1.
+    prediction.tables.extend([prediction.tables[0]] * 2)
+    prediction.tables.extend([prediction.tables[1]] * 2)
+    assert functional_dependency_f1(answer, prediction, "clean") == pytest.approx(
+        2 * (3 / 9) * 1.0 / (3 / 9 + 1.0)
+    )
+    # 복원율은 중복과 무관하게 1.0을 유지한다.
+    assert functional_dependency_recall(answer, prediction, "clean") == pytest.approx(1.0)
+
+
 def test_ari_full_coverage_prediction_beats_single_column_composite() -> None:
     # 재리뷰 재현: 컬럼 1개만 예측한 종합 점수가 전부 담은 예측을 앞서는 순위 뒤집임.
     answer = demo_answer()
@@ -603,3 +646,12 @@ def test_classify_models_no_qualifier() -> None:
     assert result.minimum_model is None
     assert result.recommended_model is None
     assert "관문" in result.reason
+
+
+def test_classify_models_zero_baseline_defers() -> None:
+    # 모든 점수가 0이면 0 >= 0 x 0.85가 성립해도 판정을 보류한다(T-0016).
+    result = classify_models([run("a", 8, 0.0), run("b", 4, 0.0)])
+    assert result.minimum_model is None
+    assert result.recommended_model is None
+    assert result.best_score == 0.0
+    assert "보류" in result.reason
