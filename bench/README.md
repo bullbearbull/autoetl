@@ -116,6 +116,32 @@ PK·FK·FD의 **정밀도 분모는 예측 개수(중복 포함)**이고 분자�
 않는다(id·fk도 '수치') — '식별자'를 따로 표시하면 그 위치가 곧 테이블 경계가
 되기 때문이다.
 
+### 실행기 v0 (`bench/runner.py`)
+
+파이프라인 결과를 채점해 점수표를 낸다(전체 실험 실행기·리더보드는 P5).
+
+```bash
+uv run python -m bench.runner --seed 42 [--pack all|orders_kr|music] [--out 파일.json]
+```
+
+- **채점 대상**은 파이프라인이 만든 3NF 후보(pattern `3nf`)다 — 벤치 정답이
+  정규화된 원본 스키마이기 때문. 3NF 후보가 없으면 선택된 후보(SelectedSchema)
+  로 대신 채점하고 표의 '채점 대상' 칸에 그 사실을 표시하며, 선택 후보의 종합
+  점수도 함께 기록한다.
+- **변환 규칙**(SchemaCandidate → BenchPrediction): 컬럼 이름은
+  TargetColumn.source_columns의 원본 컬럼 이름(= 그 변형의 필드 헤더 문자열),
+  물리 타입은 TargetColumn.physical_type, PK는 is_primary_key 컬럼, FK는
+  TargetColumn.foreign_key('테이블(컬럼)'), FD는 테이블마다 PK → 비키 컬럼.
+- **실패 기록**: 변형 하나가 실패하면 0점과 실패 단계·종료 코드만 남긴다(원문
+  오류 메시지는 남기지 않는다 — 정책 금지 패턴 1·6). 입력 오류는 S0·종료 1,
+  그 밖의 내부 오류는 단계 미상·종료 3(CLI 예외 체계와 같은 대응). 실행기는
+  끝까지 돈다.
+- **산출물**: 점수표(Markdown)는 표준 출력, 상세 JSON은 `bench/results/seed-N.json`
+  (지표별 값·FD 복원율·실패 정보 포함). 시드 고정이라 재현되며 커밋하지 않는다.
+- v0 스텁(와이드 단일 후보) 시점의 종합 점수(시드 42): orders_kr·music clean
+  23.03·24.23, multi_header 0.00(그룹 행을 헤더로 읽어 필드 이름을 모른다),
+  cp949·hard는 실패(S0, 종료 1). P1 단계마다 이 표가 개선되는지로 변경을 판단한다.
+
 ## 4. 필수 관문 (`bench/criteria.py`)
 
 관문을 통과하지 못한 모델은 판정 대상에서 제외된다.
