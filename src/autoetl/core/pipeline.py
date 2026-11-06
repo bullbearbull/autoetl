@@ -1,148 +1,56 @@
-"""빈 파이프라인 러너 v0.
+"""파이프라인 러너 — S0~S14를 순서대로 잇는다.
 
-SOP S0~S14를 계약(T-0005)을 따라 순서대로 연결한다. 각 단계는 아직 실제 분석을
-하지 않는 v0 스텁이다 — 계약의 최소 유효 값만 채워 파이프라인 전체가 벤치 v0
-데이터셋 위에서 끝까지 도는지가 이 단계의 목적이다(P0 완료 기준). 실제 결정론
-구현은 P1이, LLM 단계는 P2가 맡는다.
-
-v0 범위: 입력은 UTF-8 CSV 1개, LLM 없음(--no-llm)만 지원.
+각 단계의 실제 구현은 core/stages/ 아래 단계 모듈이고(규약은 core/README.md),
+이 파일은 AnalysisContext 생성과 순서 호출·결과 조립만 한다. v0 범위: 입력은
+UTF-8 CSV 1개, LLM 없음(--no-llm)만 지원. 실제 결정론 구현은 P1이, LLM 단계는
+P2가 맡는다.
 """
 
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
-from autoetl import __version__
 from autoetl.contracts import (
-    ColumnMapping,
-    ColumnMeaning,
     ColumnProfile,
     ColumnStats,
-    DeduplicationRule,
-    DimensionScore,
-    Evidence,
-    IncrementMode,
-    IngestFormat,
     IngestManifest,
-    LengthStats,
-    LoadOrder,
     LoadPlan,
-    NullHandling,
-    PhysicalType,
     Purpose,
     QualityReport,
-    RankedCandidate,
     Recommendation,
     RelationGraph,
     Report,
-    ReportSection,
-    ReportSectionId,
     SamplingPlan,
     SchemaCandidate,
-    SchemaPattern,
     Scorecard,
     SelectedSchema,
     SemanticModel,
-    SemanticType,
     SensitivityMap,
-    SourceColumn,
-    SourceFile,
-    StatsKind,
-    TargetColumn,
-    TargetTable,
     TypeAssignment,
-    ValidationSummary,
 )
-from autoetl.contracts.schema import CriterionScore
+from autoetl.core.context import AnalysisContext
+from autoetl.core.errors import InputError
+from autoetl.core.stages import (
+    SOP_VERSION,
+    s00_ingest,
+    s01_sampling,
+    s02_profile,
+    s03_types,
+    s04_stats,
+    s05_relations,
+    s06_quality,
+    s07_sensitivity,
+    s08_semantic,
+    s09_candidates,
+    s10_scorecards,
+    s11_recommendation,
+    s12_selection,
+    s13_load_plan,
+    s14_report,
+)
 
-SOP_VERSION = "v1"
-"""sop/v1.yaml의 version과 같아야 한다(테스트가 대조한다)."""
-
-STUB_NOTE = "v0 빈 구현"
-
-
-class InputError(ValueError):
-    """입력 파일 자체의 문제(빈 CSV, CSV 구문 오류).
-
-    안내 메시지에는 셀 값을 담지 않는다(정책 1.2절·금지 패턴 1·6). 경로·행
-    번호·컬럼 이름은 로그 L1 이하라 포함해도 된다.
-    """
-
-
-def _read_csv(path: Path) -> tuple[list[str], int, int]:
-    """UTF-8 CSV의 헤더·데이터 행 수·크기를 읽는 최소 S0 입력 파서.
-
-    utf-8-sig로 읽어 엑셀이 붙이는 BOM을 떼어 낸다(BOM이 없으면 그대로).
-    행 수는 스트리밍으로 세어 전체 파일을 메모리에 올리지 않는다.
-    """
-    with path.open(encoding="utf-8-sig", newline="") as handle:
-        reader = csv.reader(handle)
-        try:
-            first = next(reader, None)
-            if first is None:
-                raise InputError(f"빈 CSV: {path}")
-            header = [name.strip() or f"col_{i + 1}" for i, name in enumerate(first)]
-            row_count = sum(1 for _ in reader)
-        except csv.Error as exc:
-            # 셀 하나가 131072자를 넘거나(NUL 바이트 등) CSV 구문을 못 쓰는 경우.
-            # 원문 예외 메시지에 셀 내용이 섞일 수 있으므로 종류와 위치만 안내한다.
-            raise InputError(
-                f"입력 CSV를 끝까지 읽지 못했다({path}). 마지막으로 읽은 행 번호 "
-                f"{reader.line_num}. 이유: {type(exc).__name__} — 셀 하나가 너무 크거나"
-                "(csv 필드 한도 131072자) 허용되지 않는 바이트가 들어 있다."
-            ) from exc
-    return header, row_count, path.stat().st_size
-
-
-def _deduplicate_source_names(header: list[str]) -> list[str]:
-    """겹치는 원본 컬럼 이름에 발생 순서 접미(#N)를 붙여 유일하게 만든다.
-
-    CSV 헤더는 같은 이름을 여러 개 가질 수 있고(벤치 v0의 multi_header 변형이
-    그렇다), 그대로 두면 LoadPlan.source_column 같은 이름 참조가 둘을 구분하지
-    못한다. 첫 등장은 원본 이름을 유지하고 두 번째부터 '#2', '#3'…를 붙인다.
-    접미를 붙인 이름조차 실제 헤더와 겹치면 다음 접미로 밀어 유일성을 지킨다.
-    """
-    names: list[str] = []
-    taken: set[str] = set()
-    occurrences: dict[str, int] = {}
-    for name in header:
-        count = occurrences.get(name, 0) + 1
-        occurrences[name] = count
-        candidate = name if count == 1 else f"{name}#{count}"
-        while candidate in taken:
-            count += 1
-            candidate = f"{name}#{count}"
-        taken.add(candidate)
-        names.append(candidate)
-    return names
-
-
-def _sanitize_names(names: list[str]) -> list[str]:
-    """표준 영문 이름(^[a-z][a-z0-9_]*$) 목록. 입력과 같은 길이·순서를 지킨다.
-
-    ASCII가 아닌 글자(한글 헤더 등)는 버리고, 비면 col_N으로 채운다.
-    충돌(예: 'foo-bar'와 'foo bar')은 숫자 접미로 유일하게 만든다.
-    위치(인덱스) 기반으로 만들기 때문에 원본 이름이 겹쳐도 대상 이름은 유일하다.
-    """
-    safe: list[str] = []
-    taken: set[str] = set()
-    for index, name in enumerate(names):
-        cleaned = "".join(ch if ch.isascii() and ch.isalnum() else "_" for ch in name.lower())
-        parts = [part for part in cleaned.split("_") if part]
-        base = "_".join(parts)
-        if not base or not base[0].isalpha():
-            base = f"col_{index + 1}"
-        candidate = base
-        suffix = 2
-        while candidate in taken:
-            candidate = f"{base}_{suffix}"
-            suffix += 1
-        taken.add(candidate)
-        safe.append(candidate)
-    return safe
+__all__ = ["SOP_VERSION", "InputError", "PipelineResult", "run_pipeline"]
 
 
 @dataclass(frozen=True)
@@ -171,194 +79,38 @@ def run_pipeline(
     *,
     purpose: Purpose = Purpose.ANALYTICS,
 ) -> PipelineResult:
-    """S0~S14를 빈 구현으로 실행한다. LLM은 쓰지 않는다(--no-llm 전용)."""
-    header, row_count, size_bytes = _read_csv(input_path)
-    # S0 정규화: 겹치는 원본 헤더 이름을 유일하게 만든 뒤 모든 산출물이 이
-    # 이름을 참조한다. 대상 이름(safe)도 위치 기반이라 원본 중복과 무관하게 유일하다.
-    sources = _deduplicate_source_names(header)
-    safe = _sanitize_names(sources)
-    file_name = input_path.name
-
-    # S0 수집·정규화 — 실제 헤더와 행 수만 반영한다.
-    ingest = IngestManifest(
-        files=[
-            SourceFile(
-                path=file_name,
-                format=IngestFormat.CSV,
-                encoding="utf-8",
-                size_bytes=size_bytes,
-            )
-        ],
-        columns=[SourceColumn(name=name, index=i) for i, name in enumerate(sources)],
-        row_count=row_count,
-        delimiter=",",
-    )
-
-    # S1 샘플링 — v0은 항상 전수.
-    sampling = SamplingPlan(
-        strategy="full",
-        total_rows=row_count,
-        rationale=f"{STUB_NOTE}: 전수 고정",
-    )
-
-    # S2 구조 프로파일 — 최소 통계(0)만.
-    profiles = [
-        ColumnProfile(
-            column=name,
-            count=0,
-            missing_count=0,
-            missing_rate=0.0,
-            unique_count=0,
-            cardinality_ratio=0.0,
-            length=LengthStats(minimum=0, maximum=0, mean=0.0, p50=0.0, p95=0.0),
-        )
-        for name in sources
-    ]
-
-    # S3 타입 추론 — 전부 STRING/FREE_TEXT 스텁 판정.
-    types = [
-        TypeAssignment(
-            column=name,
-            physical_type=PhysicalType.STRING,
-            semantic_type=SemanticType.FREE_TEXT,
-            detector="stub.v0",
-            confidence=0.0,
-        )
-        for name in sources
-    ]
-
-    # S4 심화 통계 — 종류만 OTHER로 등록.
-    stats = [ColumnStats(column=name, kind=StatsKind.OTHER) for name in sources]
-
-    # S5 관계 분석 — 빈 그래프.
-    relations = RelationGraph()
-
-    # S6 품질 진단 — 0점 스텁.
-    quality = QualityReport(
-        completeness=DimensionScore(score=0.0, detail=STUB_NOTE),
-        validity=DimensionScore(score=0.0, detail=STUB_NOTE),
-        consistency=DimensionScore(score=0.0, detail=STUB_NOTE),
-        uniqueness=DimensionScore(score=0.0, detail=STUB_NOTE),
-        duplicate_row_count=0,
-    )
-
-    # S7 민감도 — 민감 없음 스텁.
-    sensitivity = SensitivityMap()
-
-    # S8 의미 해석 — 첫 컬럼 하나에 미확정 의미만 남긴다(LLM 없음).
-    semantic = SemanticModel(
-        business_domain=f"{STUB_NOTE}: 미확정",
-        column_meanings=[
-            ColumnMeaning(
-                column=sources[0],
-                meaning=f"{STUB_NOTE}: 미확정",
-                standard_name=safe[0],
-                evidence=[Evidence(ref="IngestManifest:columns", reason=STUB_NOTE)],
-            )
-        ],
-        unresolved_columns=sources[1:],
-        evidence=[Evidence(ref="IngestManifest", reason=STUB_NOTE)],
-    )
-
-    # S9 후보 스키마 — 전체 컬럼을 담은 단일 와이드 후보.
-    wide_table = TargetTable(
-        name="wide_table",
-        columns=[
-            TargetColumn(
-                name=safe[i],
-                physical_type=PhysicalType.STRING,
-                source_columns=[source],
-                nullable=True,
-                is_primary_key=(i == 0),
-            )
-            for i, source in enumerate(sources)
-        ],
-    )
-    candidates = [
-        SchemaCandidate(
-            id="C1",
-            pattern=SchemaPattern.WIDE,
-            tables=[wide_table],
-            rationale=f"{STUB_NOTE}: 단일 와이드 후보",
-        )
-    ]
-
-    # S10 검증·채점 — 미실행 0점.
-    def _zero_criterion() -> CriterionScore:
-        return CriterionScore(score=0.0, detail=STUB_NOTE)
-
-    scorecards = [
-        Scorecard(
-            candidate_id=candidate.id,
-            integrity=_zero_criterion(),
-            redundancy=_zero_criterion(),
-            fitness=_zero_criterion(),
-            load_simplicity=_zero_criterion(),
-            storage_efficiency=_zero_criterion(),
-            extensibility=_zero_criterion(),
-            security_isolation=_zero_criterion(),
-            weighted_total=0.0,
-            purpose=purpose,
-            validation=ValidationSummary(
-                ddl_parse_ok=False,
-                trial_load_ok=False,
-                constraint_violation_count=0,
-                data_loss_rate=0.0,
-            ),
-        )
-        for candidate in candidates
-    ]
-
-    # S11 권고 — 단일 후보 자동 추천.
-    recommendation = Recommendation(
-        ranking=[
-            RankedCandidate(
-                candidate_id="C1",
-                rank=1,
-                reasons=[Evidence(ref="Scorecard:C1", reason=STUB_NOTE)],
-            )
-        ],
-        recommended_id="C1",
-        tradeoffs=f"{STUB_NOTE}: 비교 대상 없음",
-    )
-
-    # S12 선택 — 비대화 모드 규칙대로 추천안 자동 선택.
-    selected = SelectedSchema(
-        candidate_id="C1",
-        purpose=purpose,
-        revalidated=False,
-        selection_basis=f"{STUB_NOTE}: 단일 후보 자동 선택",
-    )
-
-    # S13 적재 플랜 — 1:1 매핑, append.
-    load_plan = LoadPlan(
-        mappings=[
-            ColumnMapping(
-                source_column=source,
-                target_table="wide_table",
-                target_column=safe[i],
-                type_cast="text",
-                null_handling=NullHandling.NULL,
-            )
-            for i, source in enumerate(sources)
-        ],
-        load_order=[LoadOrder(table="wide_table")],
-        deduplication=DeduplicationRule(enabled=False, keys=[]),
-        increment=IncrementMode.APPEND,
-        expected_row_count=row_count,
-    )
-
-    # S14 보고서 — 표준 목차 11절.
-    report = Report(
-        generated_at=datetime.now(timezone.utc).isoformat(),
-        pipeline_version=__version__,
-        sop_version=SOP_VERSION,
-        purpose=purpose.value,
-        sections=[
-            ReportSection(id=section_id, title=section_id.value) for section_id in ReportSectionId
-        ],
-        reproduction={"rows": str(row_count), "columns": str(len(header))},
-    )
+    """S0~S14를 실행한다. LLM은 쓰지 않는다(--no-llm 전용)."""
+    with AnalysisContext(input_path) as ctx:
+        ingest = s00_ingest.run(ctx)
+        ctx.stage_artifacts["s00_ingest"] = ingest
+        sampling = s01_sampling.run(ctx)
+        ctx.stage_artifacts["s01_sampling"] = sampling
+        profiles = s02_profile.run(ctx, ingest)
+        ctx.stage_artifacts["s02_profile"] = profiles
+        types = s03_types.run(ctx, ingest)
+        ctx.stage_artifacts["s03_types"] = types
+        stats = s04_stats.run(ctx, ingest)
+        ctx.stage_artifacts["s04_stats"] = stats
+        relations = s05_relations.run(ctx)
+        ctx.stage_artifacts["s05_relations"] = relations
+        quality = s06_quality.run(ctx)
+        ctx.stage_artifacts["s06_quality"] = quality
+        sensitivity = s07_sensitivity.run(ctx)
+        ctx.stage_artifacts["s07_sensitivity"] = sensitivity
+        semantic = s08_semantic.run(ctx, ingest)
+        ctx.stage_artifacts["s08_semantic"] = semantic
+        candidates = s09_candidates.run(ctx, ingest)
+        ctx.stage_artifacts["s09_candidates"] = candidates
+        scorecards = s10_scorecards.run(ctx, candidates, purpose=purpose)
+        ctx.stage_artifacts["s10_scorecards"] = scorecards
+        recommendation = s11_recommendation.run(ctx, candidates)
+        ctx.stage_artifacts["s11_recommendation"] = recommendation
+        selected = s12_selection.run(ctx, recommendation, purpose=purpose)
+        ctx.stage_artifacts["s12_selection"] = selected
+        load_plan = s13_load_plan.run(ctx, ingest)
+        ctx.stage_artifacts["s13_load_plan"] = load_plan
+        report = s14_report.run(ctx, purpose=purpose)
+        ctx.stage_artifacts["s14_report"] = report
 
     return PipelineResult(
         ingest=ingest,

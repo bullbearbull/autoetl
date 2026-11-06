@@ -1,0 +1,67 @@
+{
+  "contract_version": "0.1.0",
+  "pipeline_version": "0.0.1",
+  "sop_version": "v1",
+  "purpose": "analytics",
+  "sections": [
+    {
+      "id": "summary",
+      "title": "summary",
+      "artifact_refs": []
+    },
+    {
+      "id": "dataset_overview",
+      "title": "dataset_overview",
+      "artifact_refs": []
+    },
+    {
+      "id": "column_profiles",
+      "title": "column_profiles",
+      "artifact_refs": []
+    },
+    {
+      "id": "feature_classification",
+      "title": "feature_classification",
+      "artifact_refs": []
+    },
+    {
+      "id": "relations",
+      "title": "relations",
+      "artifact_refs": []
+    },
+    {
+      "id": "patterns",
+      "title": "patterns",
+      "artifact_refs": []
+    },
+    {
+      "id": "quality",
+      "title": "quality",
+      "artifact_refs": []
+    },
+    {
+      "id": "sensitivity",
+      "title": "sensitivity",
+      "artifact_refs": []
+    },
+    {
+      "id": "schema_comparison",
+      "title": "schema_comparison",
+      "artifact_refs": []
+    },
+    {
+      "id": "load_plan",
+      "title": "load_plan",
+      "artifact_refs": []
+    },
+    {
+      "id": "appendix",
+      "title": "appendix",
+      "artifact_refs": []
+    }
+  ],
+  "reproduction": {
+    "rows": "800",
+    "columns": "13"
+  }
+}

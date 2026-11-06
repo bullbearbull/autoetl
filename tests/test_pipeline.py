@@ -23,6 +23,39 @@ def bench_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return out
 
 
+# ── T-0021 리팩터링 전후 산출물 일치(골든 대조) ────────────────────────────────
+
+GOLDEN_DIR = Path(__file__).parent / "golden" / "p1_engine_skeleton"
+GOLDEN_VARIANTS = ("clean", "missing", "format_mix", "leading_zero", "multi_header")
+
+
+@pytest.fixture(scope="module")
+def golden_bench_dirs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
+    out_by_pack: dict[str, Path] = {}
+    for pack in PACKS.values():
+        out = tmp_path_factory.mktemp("golden") / f"{pack.name}-42"
+        build_dataset(pack, seed=42, out_dir=out)
+        out_by_pack[pack.name] = out
+    return out_by_pack
+
+
+@pytest.mark.parametrize("variant", GOLDEN_VARIANTS)
+@pytest.mark.parametrize("pack_name", sorted(PACKS))
+def test_report_matches_golden(
+    pack_name: str, variant: str, golden_bench_dirs: dict[str, Path]
+) -> None:
+    # 골든은 엔진 골격 분리 전(단일 pipeline.py) 코드가 시드 42 데이터셋에서 뽑은
+    # Report다. 리팩터링은 산출물을 바꾸지 않아야 한다 — 생성 시각만 제외하고
+    # 전체 JSON이 같아야 한다(T-0021 완료 기준).
+    result = run_pipeline(golden_bench_dirs[pack_name] / f"{variant}.csv")
+    payload = json.loads(result.report.model_dump_json())
+    payload.pop("generated_at")
+    golden = json.loads(
+        (GOLDEN_DIR / f"{pack_name}-{variant}.report.json").read_text(encoding="utf-8")
+    )
+    assert payload == golden
+
+
 @pytest.fixture(scope="module")
 def bench_csv(bench_dir: Path) -> Path:
     return bench_dir / "clean.csv"
