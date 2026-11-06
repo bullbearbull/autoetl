@@ -241,6 +241,81 @@ def test_cp949_korean_after_long_ascii_head(tmp_path: Path) -> None:
         assert rows is not None and rows[0] == len(tail)  # 값이 깨지지 않았다
 
 
+# ── 리드 재검토 #119 반영 — CP949 우선·1바이트 경고·연도+정수·결측 표기 ───────
+
+
+def test_cp949_with_single_korean_value_wins_over_one_byte(tmp_path: Path) -> None:
+    # 리드 재현: ASCII가 대부분(64KB 초과)이고 한글 값이 1개뿐인 CP949 —
+    # 예전엔 cp1250 후보가 전체 파일 검증을 통과해 값이 조용히 깨졌다.
+    # CP949 우선 규칙으로 cp949를 고르고 값이 보존된다(1바이트 경고도 없다).
+    lines = ["id,city,memo"] + [f"{i},city-{i:05d},ascii-record-{i:05d}" for i in range(2200)]
+    lines[1500] = "1500,city-01500,서울특별시 강남구"  # 한글 값 1개
+    path = tmp_path / "cp949_sparse.csv"
+    path.write_bytes(("\n".join(lines) + "\n").encode("cp949"))
+    assert path.stat().st_size > 64 * 1024
+
+    spec = probe_source(path)
+    assert spec.encoding.replace("-", "_").lower() in {"cp949", "euc_kr"}
+    assert not any("1바이트" in warning for warning in spec.warnings)
+    if spec.converted:
+        spec.load_path.unlink(missing_ok=True)
+    with AnalysisContext(path) as ctx:
+        rows = ctx.connection.execute(
+            f"SELECT COUNT(*) FROM {RAW_TABLE} WHERE \"c2\" LIKE '%서울%'"
+        ).fetchone()
+        assert rows is not None and rows[0] == 1  # 값이 깨지지 않았다
+
+
+def test_cp1252_file_is_not_cp949_and_warns(tmp_path: Path) -> None:
+    # 리드 재현: 프랑스·독일어 문자가 든 cp1252 — cp949로 읽히지 않아야
+    # 하고(리드가 서유럽 표본의 cp949 디코딩 실패를 확인했다), 1바이트
+    # 코드페이지 판정에는 확인 요청 경고가 남는다.
+    lines = ["id,name,city"] + [f"{i},Müller-{i},Saint-Étienne-{i}" for i in range(500)]
+    path = tmp_path / "cp1252.csv"
+    path.write_bytes(("\n".join(lines) + "\n").encode("cp1252"))
+
+    spec = probe_source(path)
+    assert "cp949" not in spec.encoding.lower() and "euc" not in spec.encoding.lower()
+    assert any("1바이트" in warning for warning in spec.warnings), spec.warnings
+    if spec.converted:
+        spec.load_path.unlink(missing_ok=True)
+    with AnalysisContext(path) as ctx:
+        rows = ctx.connection.execute(
+            f"SELECT COUNT(*) FROM {RAW_TABLE} WHERE \"c1\" LIKE '%Müller%'"
+        ).fetchone()
+        assert rows is not None and rows[0] == 500  # 악센트 문자 보존
+
+
+def test_year_header_with_integer_data_stays_one_header_row(tmp_path: Path) -> None:
+    # 리드 재현(#119): 연도형 숫자 헤더 + 인구 같은 큰 정수 데이터 — 둘 다
+    # 정수라 세부 형태만으로 구분되지 않는다. 자릿수 비교로 1행을 유지한다.
+    path = tmp_path / "years_int.csv"
+    lines = ["지역,2020,2021,2022"]
+    lines += [
+        f"지역-{r:02d},{5_000_000 + r * 1111},{5_100_000 + r * 1111},{5_200_000 + r * 1111}"
+        for r in range(12)
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    spec = probe_source(path)
+    assert spec.header_row_count == 1
+    assert spec.header == ["지역", "2020", "2021", "2022"]
+    assert spec.row_count == 12
+
+
+def test_missing_markers_in_first_data_row_are_not_header_evidence(tmp_path: Path) -> None:
+    # 리드 재현: 숫자 컬럼 2칸에 결측 표기('N/A', '-')가 든 첫 데이터 행이
+    # 헤더로 판정돼 행이 사라지고 셀 값이 컬럼 이름이 되던 누출 경로 차단.
+    path = tmp_path / "markers.csv"
+    path.write_text(
+        "id,qty,price,note\n1,N/A,-,가\n2,5,200,나\n3,6,300,다\n4,7,400,라\n",
+        encoding="utf-8",
+    )
+    spec = probe_source(path)
+    assert spec.header_row_count == 1
+    assert spec.header == ["id", "qty", "price", "note"]
+    assert spec.row_count == 4
+
+
 def test_probe_memory_does_not_scale_with_file_size(tmp_path: Path) -> None:
     # 리드 재현: probe 메모리는 파일 크기와 무관해야 한다(30.6MB에서 381MB
     # 최고점이었다). 두 배 이상 크기가 다른 파일의 최고점이 같은 상한 아래다.

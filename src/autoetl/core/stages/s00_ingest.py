@@ -2,27 +2,38 @@
 
 추론 규칙(리드 결정, T-0023):
 
-- 인코딩: BOM 확인 → UTF-8 엄격 디코딩 → 실패하면 charset-normalizer 감지
-  (CP949·EUC-KR 주의). 감지 표본은 UTF-8 디코딩이 실패한 위치 근처
-  바이트다 — 한국 공공데이터처럼 앞부분이 ASCII이고 한글이 뒤에 처음
-  나오는 CP949 파일도 잡는다(앞 64KB를 함께 넣으면 ASCII가 표본을
-  지배해 근처 코드페이지가 이겨버려서 재현 후 버렸다). 상위 후보는 전체
-  파일 증분 디코딩으로 검증해 끝까지 읽히는 첫 후보를 고른다. 신뢰도가
-  낮으면 경고를 남기고 비대화 모드 SOP대로 latin-1으로 다시 읽는다.
-  UTF-8이 아니면 임시 UTF-8 파일로 변환해 적재하고 컨텍스트가 실행 끝
-  (예외 포함)에 지운다.
+- 인코딩: BOM 확인 → UTF-8 엄격 디코딩 → 실패하면 **CP949 우선 규칙**으로
+  cp949 엄격 전체 디코딩을 먼저 시도한다(성공하면 cp949). 한국
+  공공데이터(CP949)가 핵심 대상이라 한글이 드문 파일(ASCII가 대부분)이
+  1바이트 코드페이지(cp1250 등)로 골라져 조용히 깨지는 일을 막는다 —
+  cp949는 2바이트 코드페이지라 엄격 디코딩 성공 자체가 강한 근거고,
+  서유럽 표본(불·독·포·폴란드어)은 cp949로 끝까지 읽히지 않는다(리드
+  확인). 그다음 charset-normalizer 감지를 한다(CP949·EUC-KR 주의).
+  감지 표본은 UTF-8 디코딩이 실패한 위치 근처 바이트다 — 한국
+  공공데이터처럼 앞부분이 ASCII이고 한글이 뒤에 처음 나오는 CP949
+  파일도 잡는다(앞 64KB를 함께 넣으면 ASCII가 표본을 지배해 근처
+  코드페이지가 이겨버려서 재현 후 버렸다). 상위 후보는 전체 파일 증분
+  디코딩으로 검증해 끝까지 읽히는 첫 후보를 고른다. 후보가 1바이트
+  코드페이지(latin·cp125x 계열)면 경고를 남긴다 — 거의 모든 바이트를
+  읽어버려 '전체 파일 검증'이 근거가 되지 못하고 다른 인코딩과 구분이
+  안 되기 때문이다(대화 모드에서는 이 경고로 사용자 확인을 받는다).
+  신뢰도가 낮으면 경고를 남기고 비대화 모드 SOP대로 latin-1으로 다시
+  읽는다. UTF-8이 아니면 임시 UTF-8 파일로 변환해 적재하고 컨텍스트가
+  실행 끝(예외 포함)에 지운다.
 - 구분자: 앞부분 표본(첫 50줄)에서 후보(쉼표·세미콜론·탭·파이프)를 골라
   표본의 필드 수 일관성으로 확정한다. 인용 필드 안의 구분자는 csv 모듈이
   처리한다.
 - 헤더 행 수: **기본은 헤더 1행이다.** 2행 이상이나 0행으로 판정을 바꾸려면
   충분한 근거가 필요하다 — 데이터 표본의 강형 컬럼(정수·소수·날짜 다수)이
-  2개 이상이고, 그 칸에 값이 있는(빈 칸은 헤더 근거로 세지 않는다) 위쪽
-  연속 행의 값이 텍스트 형태일 때만 헤더로 센다(비율 0.5 이상, 최대 5행).
-  다중 행 헤더면 컬럼 이름은 마지막 헤더 행(필드 행)이고
-  applied_normalizations에 남긴다. 첫 행이 데이터 형태면 헤더 없음(0행)은
-  강형 칸 전부가 데이터의 세부 형태(정수·소수·날짜)와 같을 때만 인정한다
-  — 연도형 숫자 헤더('2020', '2021'…)는 소수 데이터와 구분돼 1행을
-  유지한다. 헤더가 없다고 판정하면 col_1..N으로 이름 짓고 경고를 남긴다
+  2개 이상이고, 그 칸에 값이 있는(빈 칸과 흔한 결측 표기는 헤더 근거로
+  세지 않는다) 위쪽 연속 행의 값이 텍스트 형태일 때만 헤더로 센다(비율
+  0.5 이상, 최대 5행). 다중 행 헤더면 컬럼 이름은 마지막 헤더 행(필드
+  행)이고 applied_normalizations에 남긴다. 첫 행이 데이터 형태면 헤더
+  없음(0행)은 강형 칸 전부가 데이터의 세부 형태(정수·소수·날짜)와 같고
+  값 자릿수까지 데이터 범위 안일 때만 인정한다 — 연도형 숫자
+  헤더('2020', '2021'…)는 소수 데이터와 세부 형태로, 인구 같은 큰 정수
+  데이터와는 자릿수로 구분돼 1행을 유지한다. 헤더가 없다고 판정하면
+  col_1..N으로 이름 짓고 경고를 남긴다
   (SOP). 낮은 근거로 판정을 바꾸면 데이터 행이 사라지고 셀 값이 컬럼
   이름(로그·LLM 메타데이터로 나가는 값)이 되기 때문이다.
 - 이름 중복은 T-0014 규칙(#N 접미)을 유지한다.
@@ -71,6 +82,24 @@ ENCODING_CANDIDATES = 5
 LOW_CONFIDENCE = 0.7
 CHUNK_BYTES = 1024 * 1024
 CONVERT_CHARS = 1024 * 1024
+SINGLE_BYTE_MIN_BYTES = 200
+"""1바이트 코드페이지 판정 문턱(바이트 256개 중 혼자 디코딩되는 개수 하한).
+
+cp125x·latin·mac 계열은 224~256개가 혼자 읽히지만 다중 바이트 코드페이지는
+ASCII만 혼자 읽힌다(shift_jis는 반각 가타카나까지 합쳐 191개) — 200은
+그 사이를 가른다.
+"""
+
+MISSING_MARKERS = frozenset(
+    {"-", ".", "?", "n/a", "na", "null", "none", "nan", "없음", "해당없음", "미상"}
+)
+"""헤더 근거에서 제외할 흔한 결측 표기(소문자 기준, 대소문자 무시).
+
+결측 값 해석 전체는 S2가 맡는다. 이 목록은 '헤더 근거 제외'에만 쓴다 —
+결측 표기가 강형 칸 2개 이상을 채운 첫 데이터 행이 헤더로 판정돼 행이
+사라지고 셀 값이 컬럼 이름(로그·LLM 메타데이터로 나가는 값)이 되는
+누출 경로를 막는다(리드 재검토 #119).
+"""
 
 _DATE_RE = re.compile(r"^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?$")
 _BOM_ENCODINGS: tuple[tuple[bytes, str], ...] = (
@@ -182,6 +211,23 @@ def _decodes_as(path: Path, encoding: str) -> bool:
     return True
 
 
+def _is_single_byte_codec(encoding: str) -> bool:
+    """1바이트 코드페이지(latin·cp125x 계열)인가.
+
+    바이트 256개를 각각 혼자 디코딩해 본다. 1바이트 코드페이지는 거의 모든
+    바이트를 읽어버려 '전체 파일이 읽히는가' 검증이 근거가 되지 못한다
+    (어떤 파일이든 거의 통과한다). 그래서 이 판정에 걸리면 경고를 남긴다.
+    """
+    decoded = 0
+    for value in range(256):
+        try:
+            bytes((value,)).decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        decoded += 1
+    return decoded >= SINGLE_BYTE_MIN_BYTES
+
+
 def _utf8_failure_position(path: Path) -> int:
     """UTF-8 엄격 검사. 실패하면 실패한 바이트 위치, 성공하면 -1.
 
@@ -255,6 +301,15 @@ def _detect_encoding(path: Path) -> tuple[str, Path, bool, list[str]]:
     if failure < 0:
         return "utf-8", path, False, warnings
 
+    # CP949 우선 규칙(리드 재검토 #119): 1바이트 코드페이지 후보는 '전체
+    # 파일이 읽히는가' 검증으로 구분되지 않는다(거의 다 통과한다). 그래서
+    # 감지기보다 먼저 cp949 엄격 전체 디코딩을 시도한다 — 한글이 1~2개뿐인
+    # CP949(ASCII가 대부분)가 cp1250으로 골라져 값이 조용히 깨지던 것을
+    # 막는다. cp949는 2바이트 코드페이지라 엄격 디코딩 성공이 강한 근거고,
+    # 서유럽 표본(불·독·포·폴란드어)은 cp949로 끝까지 읽히지 않는다.
+    if _decodes_as(path, "cp949"):
+        return "cp949", _convert_to_utf8(path, "cp949"), True, warnings
+
     # charset-normalizer는 정돈된 짧은 텍스트에서 coherence가 0으로 나올 수
     # 있다(벤치 cp949가 그렇다). 순위는 from_bytes가 이미 정했으니 신뢰도는
     # coherence와 chaos(낮을수록 좋음)를 합쳐 잰다. 표본이 짧으면 순위
@@ -273,6 +328,14 @@ def _detect_encoding(path: Path) -> tuple[str, Path, bool, list[str]]:
             break
     if verified is not None:
         encoding = verified
+        # 1바이트 코드페이지는 어떤 파일이든 거의 읽어버려 검증이 근거가
+        # 되지 못한다. 다른 인코딩과 구분이 안 되니 확인 요청 경고를 남긴다
+        # (대화 모드의 사용자 확인 재료).
+        if _is_single_byte_codec(encoding):
+            warnings.append(
+                f"1바이트 코드페이지 {encoding}(으)로 읽었다. "
+                "다른 인코딩일 수 있으니 확인이 필요하다"
+            )
     elif candidates:
         warnings.append("감지한 인코딩으로 전체 파일을 읽지 못해 latin-1으로 읽었다")
     else:
@@ -342,6 +405,16 @@ def _profile_kind(value: str) -> str:
     return "text"
 
 
+def _is_missing_marker(value: str) -> bool:
+    """흔한 결측 표기인가(대소문자 무시, 앞뒤 공백 제거). 헤더 근거 제외용."""
+    return value.strip().lower() in MISSING_MARKERS
+
+
+def _digit_count(value: str) -> int:
+    """숫자 형태 셀의 자릿수(숫자 글자만 센다). 0행 판정의 길이 비교 근거."""
+    return sum(1 for ch in value if ch.isascii() and ch.isdigit())
+
+
 def _column_profiles(rows: list[list[str]]) -> dict[int, str]:
     """데이터 표본으로 컬럼별 형태. 강형(int·float·date 다수)만 돌려준다."""
     if not rows:
@@ -363,24 +436,32 @@ def _column_profiles(rows: list[list[str]]) -> dict[int, str]:
     return strong
 
 
-def _header_row_count(rows: list[list[str]], strong: dict[int, str]) -> int:
+def _header_row_count(
+    rows: list[list[str]], strong: dict[int, str], profile_rows: list[list[str]]
+) -> int:
     """위쪽 행이 데이터 형태와 다른 동안 헤더로 센다(최대 HEADER_SCAN_LIMIT행).
 
     기본은 헤더 1행이다. 낮은 근거로 0행·2행 이상으로 판정하면 데이터 행이
     사라지고 셀 값이 컬럼 이름(로그·LLM 메타데이터로 나가는 값)이 되므로
     판정을 바꾸려면 (1) 강형 컬럼 2개 이상, (2) 값 있는 강형 칸 2개 이상
-    (빈 칸은 근거로 세지 않는다), (3) 그 값의 텍스트 비율 0.5 이상이
-    연속해야 한다. 첫 행이 데이터 형태면 헤더 없음(0행)은 강형 칸 전부가
-    데이터의 세부 형태(정수·소수·날짜)와 같을 때만 인정한다.
+    (빈 칸과 흔한 결측 표기는 근거로 세지 않는다), (3) 그 값의 텍스트 비율
+    0.5 이상이 연속해야 한다. 첫 행이 데이터 형태면 헤더 없음(0행)은 강형
+    칸 전부가 데이터의 세부 형태(정수·소수·날짜)와 같고 값 자릿수까지
+    데이터 범위 안일 때만 인정한다 — 연도형 숫자 헤더('2020')는 소수
+    데이터와 세부 형태로, 인구 같은 큰 정수 데이터와는 자릿수로 구분된다.
     """
     if len(strong) < MIN_STRONG_COLUMNS:
         return 1  # 근거가 될 강형 컬럼이 부족하다 — 관례대로 1행 헤더.
     indexes = sorted(strong)
     count = 0
     for row in rows:
-        evidence = [row[index] for index in indexes if index < len(row) and row[index].strip()]
+        evidence = [
+            row[index]
+            for index in indexes
+            if index < len(row) and row[index].strip() and not _is_missing_marker(row[index])
+        ]
         if len(evidence) < MIN_HEADER_EVIDENCE:
-            break  # 빈 칸은 헤더 근거가 아니다 — 근거 부족은 데이터로 본다.
+            break  # 빈 칸·결측 표기는 헤더 근거가 아니다 — 근거 부족은 데이터로 본다.
         ratio = sum(1 for cell in evidence if _profile_kind(cell) == "text") / len(evidence)
         if ratio < HEADER_TEXT_RATIO:
             break  # 데이터 형태다.
@@ -390,9 +471,19 @@ def _header_row_count(rows: list[list[str]], strong: dict[int, str]) -> int:
     first = rows[0]
     for index in indexes:
         cell = first[index] if index < len(first) else ""
-        if not cell.strip() or _profile_kind(cell) != strong[index]:
+        if not cell.strip() or _is_missing_marker(cell) or _profile_kind(cell) != strong[index]:
             return 1  # 세부 형태가 다르거나 판단 재료가 없다 — 기본 1행.
-    return 0  # 첫 행까지 데이터와 세부 형태가 완전히 같다 — 헤더가 없다.
+        if strong[index] not in ("int", "float"):
+            continue  # 날짜는 자릿수가 거의 일정하다 — 형태 검사로 충분하다.
+        digits = _digit_count(cell)
+        data_digits = [
+            _digit_count(row[index])
+            for row in profile_rows
+            if index < len(row) and row[index].strip() and not _is_missing_marker(row[index])
+        ]
+        if data_digits and not min(data_digits) <= digits <= max(data_digits):
+            return 1  # 자릿수가 데이터 범위 밖이다 — 헤더 근거로 충분하다.
+    return 0  # 첫 행까지 데이터와 세부 형태·자릿수가 같다 — 헤더가 없다.
 
 
 def _normalized_names(header_row: list[str]) -> list[str]:
@@ -453,7 +544,7 @@ def probe_source(path: Path) -> SourceSpec:
         # 오염시키지 않게). 표본이 검사 구간보다 짧으면 첫 행만 빼고 쓴다.
         profile_rows = sample_rows[HEADER_SCAN_LIMIT:] or sample_rows[1:]
         strong = _column_profiles(profile_rows)
-        header_rows = _header_row_count(sample_rows[:HEADER_SCAN_LIMIT], strong)
+        header_rows = _header_row_count(sample_rows[:HEADER_SCAN_LIMIT], strong, profile_rows)
         applied: list[str] = []
         if header_rows == 0:
             names = [f"col_{index + 1}" for index in range(width)]
