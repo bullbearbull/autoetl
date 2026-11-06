@@ -1,7 +1,8 @@
-"""벤치 정답 파일 형식 v0.2 (answer.json).
+"""벤치 정답 파일 형식 v0.3 (answer.json).
 
 T-0008 생성기가 내보내던 잠정 형식을 정식화하고, T-0015에서 채점 키를 헤더
-문자열에서 컬럼 ID로 바꿨다. 정답은 원본 관계형 스키마 그 자체다: 테이블,
+문자열에서 컬럼 ID로 바꿨다. T-0020에서 정수 대리 키(kind id·fk)의 정답 물리
+타입을 integer로 바로잡았다. 정답은 원본 관계형 스키마 그 자체다: 테이블,
 컬럼의 물리 타입, 기본 키, 외래 키, 함수 종속, 컬럼→테이블 배정. 예측(채점
 대상)은 같은 구조를 쓰되 컬럼 이름은 채점 대상 변형 CSV의 헤더 문자열이다.
 """
@@ -12,11 +13,11 @@ from pydantic import Field
 
 from autoetl.contracts.common import ContractModel, PhysicalType
 
-ANSWER_VERSION = "0.2.0"
+ANSWER_VERSION = "0.3.0"
 
 PHYSICAL_TYPE_OF_KIND: dict[str, PhysicalType] = {
-    "id": PhysicalType.STRING,
-    "fk": PhysicalType.STRING,
+    "id": PhysicalType.INTEGER,
+    "fk": PhysicalType.INTEGER,
     "int": PhysicalType.INTEGER,
     "amount": PhysicalType.DECIMAL,
     "date": PhysicalType.DATE,
@@ -27,7 +28,11 @@ PHYSICAL_TYPE_OF_KIND: dict[str, PhysicalType] = {
     "category": PhysicalType.STRING,
     "text": PhysicalType.STRING,
 }
-"""생성기 컬럼 종류(kind) → 물리 타입 매핑."""
+"""생성기 컬럼 종류(kind) → 물리 타입 매핑.
+
+키(id·fk)는 1, 2, 3… 정수 대리 키라 integer다(T-0020). 앞자리 0이 있는 고정
+자릿수 코드(kind code)는 문자열 그대로다(0을 보존해야 한다).
+"""
 
 
 class AnswerColumn(ContractModel):

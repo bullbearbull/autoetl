@@ -17,7 +17,7 @@ bench/datasets/<팩>-<시드>/
   multi_header.csv    두 행 헤더(1행 = 컬럼 성격 그룹, 2행 = 필드)
   cp949.csv           CP949 인코딩
   hard.csv            위 잡음 전부 + CP949 + 이름 없는 필드 헤더(col_01 형식)
-  answer.json         정답 스키마(BenchAnswer 0.2.0)
+  answer.json         정답 스키마(BenchAnswer 0.3.0)
   manifest.json       시드·변형·라이선스·규모
   README.md           사람용 설명(라이선스 포함)
 ```
@@ -31,12 +31,14 @@ Sakila) 수입은 데이터별 이용 조건 확인 후 v1에 추가한다.
 
 ## 2. 정답 형식 (answer.json, `bench/answer.py`)
 
-- `answer_version`: 형식 버전(0.2.0).
+- `answer_version`: 형식 버전(0.3.0).
 - `tables[]`: 테이블마다 `name`, `primary_key`(컬럼 목록), `columns[]`
   (`name`, `column_id`, `physical_type` — contracts.PhysicalType,
   `is_foreign_key`), `foreign_keys[]` (`table`, `columns`, `references_table`,
   `references_columns`), `functional_dependencies[]` (`table`, `determinant[]`,
   `dependent`), `row_count`.
+- **키 타입(T-0020)**: 정수 대리 키(kind id·fk)의 정답 물리 타입은 integer다.
+  앞자리 0을 보존하는 고정 자릿수 코드(kind code)는 string을 유지한다.
 - `column_id`: 평면 파일의 컬럼 ID(테이블 접두사가 없는 이름). FK 컬럼의
   column_id는 참조 대상 부모 PK의 컬럼 ID다 — 자식 FK와 부모 PK는 같은 평면
   컬럼을 가리킨다.
@@ -101,13 +103,13 @@ PK·FK·FD의 **정밀도 분모는 예측 개수(중복 포함)**이고 분자�
 
 | 팩 | 변형 | 단일 와이드 | 이름 규칙 | 위치 끊기 |
 | --- | --- | --- | --- | --- |
-| orders_kr | clean | 21.68 | 31.46 | 53.68 |
-| orders_kr | hard | 21.68 | 21.68 | 21.68 |
-| music | clean | 23.85 | 30.99 | 53.85 |
-| music | hard | 23.85 | 23.85 | 23.85 |
+| orders_kr | clean | 17.47 | 27.25 | 49.47 |
+| orders_kr | hard | 17.47 | 17.47 | 17.47 |
+| music | clean | 19.23 | 26.37 | 49.23 |
+| music | hard | 19.23 | 19.23 | 19.23 |
 
 헤더 이름에는 실제 신호가 있다 — 위치 끊기는 데이터를 한 줄도 읽지 않고
-절반가량(53~54점)까지 도달한다. FK·FD·타입과 나머지 배정은 데이터를 읽어야만
+절반가량(49점)까지 도달한다. FK·FD·타입과 나머지 배정은 데이터를 읽어야만
 얻을 수 있고, 100점과의 거리가 T-0015 변경의 요점이다. hard의 그룹 행·필드
 행만 쓰는 위치 끊기 공격은 clean 이름 신호(위치 끊기)보다 낮게 막아 뒀다
 (테스트가 대조한다). 다중 헤더 그룹 행은 키 컬럼을 다른 컬럼과 구별하지
