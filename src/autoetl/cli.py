@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     analyze = subparsers.add_parser("analyze", help="파일을 분석해 보고서를 낸다")
-    analyze.add_argument("file", type=Path, help="입력 파일(UTF-8 CSV)")
+    analyze.add_argument("file", type=Path, help="입력 파일(CSV — 인코딩 자동 감지)")
     analyze.add_argument(
         "--no-llm",
         action="store_true",

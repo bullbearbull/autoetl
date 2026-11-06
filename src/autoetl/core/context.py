@@ -2,8 +2,9 @@
 
 AnalysisContext 하나가 파이프라인 실행 전체의 입력 상태를 뜻한다(T-0021):
 
-- csv 모듈로 원본을 한 번 읽어 헤더(정규화: strip·빈 이름 col_N 채움)·행 수·
-  크기를 확정한다. 오류 경로(UnicodeDecodeError, InputError)는 v0 러너와 같다.
+- 입력 추론은 S0의 probe_source(T-0023)가 맡는다: 인코딩(BOM → UTF-8 엄격 →
+  charset-normalizer, 비 UTF-8은 임시 UTF-8 파일로 변환), 구분자, 헤더 행 수.
+  오류 경로(빈 CSV·CSV 구문 오류 → InputError)는 v0 러너와 같다.
 - 프로세스 안 DuckDB 연결 하나에 원본을 **전 값 VARCHAR** 테이블(`raw`)로
   적재한다. 원문은 바꾸지 않는다: 앞자리 0('007'), 지수 표기('1E5'),
   공백만 있는 값('  ')은 그대로 남고, 따옴표 없는 빈 칸은 NULL, 따옴표로
@@ -15,7 +16,7 @@ AnalysisContext 하나가 파이프라인 실행 전체의 입력 상태를 뜻�
 - 연결 기본값을 잠근다(심층 방어): 확장 자동 설치·자동 로드 끔, 원본 적재가
   끝나면 외부 접근(파일 함수·ATTACH) 끔. 이후 단계 쿼리는 메모리 테이블만
   볼 수 있다.
-- DuckDB 임시 폴더는 작업 임시 폴더 안에 두고 close()(예외로 끝나도) 지운다.
+- DuckDB 임시 폴더와 인코딩 변환 임시 파일은 close()(예외로 끝나도) 지운다.
 
 이후 단계가 쓰는 자리: normalized_view(S3 타입 추론이 정규화 뷰 이름을
 채운다), stage_artifacts(pipeline이 단계 산출물을 단계 키로 등록한다).
@@ -25,7 +26,6 @@ AnalysisContext 하나가 파이프라인 실행 전체의 입력 상태를 뜻�
 
 from __future__ import annotations
 
-import csv
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -35,6 +35,7 @@ from typing import Any
 import duckdb
 
 from autoetl.core.errors import InputError
+from autoetl.core.stages.s00_ingest import SourceSpec, probe_source
 
 RAW_TABLE = "raw"
 """원본 테이블. 컬럼 이름은 코드가 만든 내부 식별자(c0, c1, …)다."""
@@ -62,48 +63,31 @@ class ContextColumn:
     column_id: str
 
 
-def _read_source(path: Path) -> tuple[list[str], int, int]:
-    """UTF-8 CSV의 헤더·데이터 행 수·크기를 읽는 최소 S0 입력 파서.
-
-    utf-8-sig로 읽어 엑셀이 붙이는 BOM을 떼어 낸다(BOM이 없으면 그대로).
-    행 수는 스트리밍으로 세어 전체 파일을 메모리에 올리지 않는다.
-    """
-    with path.open(encoding="utf-8-sig", newline="") as handle:
-        reader = csv.reader(handle)
-        try:
-            first = next(reader, None)
-            if first is None:
-                raise InputError(f"빈 CSV: {path}")
-            header = [name.strip() or f"col_{i + 1}" for i, name in enumerate(first)]
-            row_count = sum(1 for _ in reader)
-        except csv.Error as exc:
-            # 셀 하나가 131072자를 넘거나(NUL 바이트 등) CSV 구문을 못 쓰는 경우.
-            # 원문 예외 메시지에 셀 내용이 섞일 수 있으므로 종류와 위치만 안내한다.
-            raise InputError(
-                f"입력 CSV를 끝까지 읽지 못했다({path}). 마지막으로 읽은 행 번호 "
-                f"{reader.line_num}. 이유: {type(exc).__name__} — 셀 하나가 너무 크거나"
-                "(csv 필드 한도 131072자) 허용되지 않는 바이트가 들어 있다."
-            ) from exc
-    return header, row_count, path.stat().st_size
-
-
 class AnalysisContext:
     """한 번의 파이프라인 실행이 공유하는 입력 상태와 DuckDB 연결.
 
     컨텍스트 매니저로 쓴다(`with AnalysisContext(path) as ctx:`). 블록이
-    끝나면(예외로 끝나도) 연결을 닫고 임시 폴더를 지운다.
+    끝나면(예외로 끝나도) 연결을 닫고 임시 폴더와 인코딩 변환 임시 파일을 지운다.
+
+    입력 추론(spec)을 넘기지 않으면 probe_source(S0 추론)로 직접 판정한다
+    (T-0023: 인코딩·구분자·헤더 행 수). pipeline은 probe 결과를 재사용해
+    두 번 판정하지 않는다.
     """
 
     def __init__(
         self,
         input_path: Path,
         *,
+        spec: SourceSpec | None = None,
         memory_limit: str | None = None,
         threads: int | None = None,
     ) -> None:
         self.input_path = input_path
         self.source_name = input_path.name
-        self.header, self.row_count, self.size_bytes = _read_source(input_path)
+        self.spec = probe_source(input_path) if spec is None else spec
+        self.header = list(self.spec.header)
+        self.row_count = self.spec.row_count
+        self.size_bytes = self.spec.size_bytes
         self.columns = tuple(
             ContextColumn(
                 position=position,
@@ -133,15 +117,17 @@ class AnalysisContext:
                 # 파일에서 온 문자열(헤더)은 SQL에 넣지 않는다. 컬럼 이름을 코드가
                 # 만든 내부 식별자(c0, c1, …)로 지정해 적재하고 원래 헤더 이름은
                 # ContextColumn(Python)에만 남는다. 식별자는 [c][0-9] 글자뿐이라
-                # 문장 조립이 안전하다.
+                # 문장 조립이 안전하다. 구분자도 후보 집합(, ; 탭 |) 안의 한 글자다.
+                # 헤더 행은 probe가 이미 셌으므로 skip으로 건너뛴다(T-0023).
                 columns_spec = ", ".join(
                     f"'{column.column_id}': 'VARCHAR'" for column in self.columns
                 )
                 self.connection.execute(
                     f"CREATE TABLE {RAW_TABLE} AS SELECT * FROM read_csv(?, "
-                    f"header=true, columns={{{columns_spec}}}, "
-                    "allow_quoted_nulls=false, delim=',')",
-                    [str(input_path)],
+                    f"header=false, skip={self.spec.header_row_count}, "
+                    f"columns={{{columns_spec}}}, "
+                    f"allow_quoted_nulls=false, delim='{self.spec.delimiter}')",
+                    [str(self.spec.load_path)],
                 )
             except duckdb.Error as exc:
                 # 적재 실패(행마다 컬럼 수가 다른 등)도 입력 문제다. DuckDB 오류
@@ -163,13 +149,16 @@ class AnalysisContext:
         return self.columns[position].column_id
 
     def close(self) -> None:
-        """연결을 닫고 임시 폴더를 지운다. 여러 번 불러도 안전하다."""
+        """연결을 닫고 임시 폴더와 변환 임시 파일을 지운다. 여러 번 불러도 안전하다."""
         connection = getattr(self, "connection", None)
         if connection is not None:
             connection.close()
         temp_dir = getattr(self, "_temp_dir", None)
         if temp_dir is not None and temp_dir.exists():
             shutil.rmtree(temp_dir, ignore_errors=True)
+        spec = getattr(self, "spec", None)
+        if spec is not None and spec.converted:
+            spec.load_path.unlink(missing_ok=True)
 
     def __enter__(self) -> AnalysisContext:
         return self

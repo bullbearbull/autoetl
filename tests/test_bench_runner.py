@@ -91,27 +91,20 @@ def test_converter_scores_perfect_on_every_variant(
     assert schema_recovery_score(answer, prediction, variant) == pytest.approx(100.0)
 
 
-def test_runner_on_current_main_records_failures_and_finishes(
-    tmp_path: Path,
-) -> None:
-    # 완료 기준: 현재 main(와이드 스텁)에서 실행하면 표가 나온다. 못 읽는
-    # 변형(cp949·hard)은 실패로 기록되고 실행기는 끝까지 돈다.
+def test_runner_on_current_main_scores_every_variant(tmp_path: Path) -> None:
+    # T-0023 이후 S0가 인코딩·다중 헤더를 감지해 2팩x7변형 전부가 채점된다.
+    # (T-0022 시점의 'cp949·hard는 S0 실패' 기록 경로는 오류 주입 테스트가
+    # 따로 확인한다.)
     results = run_bench(seed=42, datasets_dir=tmp_path)
     assert len(results) == len(PACKS) * len(VARIANTS)
     for item in results:
         assert isinstance(item, VariantResult)
-        if item.variant in ("cp949", "hard"):
-            assert item.metrics is None
-            assert item.failure_stage == "S0"
-            assert item.failure_exit_code == 1
-            assert item.candidate_label == "실패"
-        else:
-            assert item.metrics is not None
-            assert set(item.metrics) >= set(METRICS) | {"fd_recall"}
-            assert item.failure_stage is None
-            # v0에는 3NF 후보가 없다 — 선택 후보로 채점하고 표에 표시한다.
-            assert item.candidate_label == "선택 후보(C1)"
-            assert item.selected_total == item.metrics["total"]
+        assert item.metrics is not None
+        assert set(item.metrics) >= set(METRICS) | {"fd_recall"}
+        assert item.failure_stage is None
+        # v0에는 3NF 후보가 없다 — 선택 후보로 채점하고 표에 표시한다.
+        assert item.candidate_label == "선택 후보(C1)"
+        assert item.selected_total == item.metrics["total"]
 
 
 def test_same_seed_produces_identical_results(tmp_path: Path) -> None:
@@ -242,9 +235,10 @@ def test_scoring_failure_is_recorded_not_fatal(
     assert len(broken) == 1, "orders_kr clean 하나만 채점 변환 실패다"
     assert broken[0]["pack"] == "orders_kr" and broken[0]["variant"] == "clean"
     assert broken[0]["failure"]["exit_code"] == 3
-    # 실패는 채점 변환 1건 + 입력 실패(cp949·hard x 2팩 = 4건). 나머지는 점수 기록.
+    # 실패는 주입한 채점 변환 1건뿐. 나머지는 전부 점수 기록(T-0023 이후
+    # cp949·hard도 읽힌다).
     scored = [item for item in payload["results"] if item["metrics"] is not None]
-    assert len(scored) == total - 5
+    assert len(scored) == total - 1
 
 
 def test_selected_id_missing_is_marked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

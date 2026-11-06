@@ -138,9 +138,10 @@ uv run python -m bench.runner --seed 42 [--pack all|orders_kr|music] [--out 파�
   끝까지 돈다.
 - **산출물**: 점수표(Markdown)는 표준 출력, 상세 JSON은 `bench/results/seed-N.json`
   (지표별 값·FD 복원율·실패 정보 포함). 시드 고정이라 재현되며 커밋하지 않는다.
-- v0 스텁(와이드 단일 후보) 시점의 종합 점수(시드 42): orders_kr·music clean
-  23.03·24.23, multi_header 0.00(그룹 행을 헤더로 읽어 필드 이름을 모른다),
-  cp949·hard는 실패(S0, 종료 1). P1 단계마다 이 표가 개선되는지로 변경을 판단한다.
+- S0 입력 추론 도입 후(T-0023) 와이드 스텁의 종합 점수(시드 42)는 **7변형 전부가
+  채점된다**: orders_kr 23.03, music 24.23(변형 간 동일 — 와이드 후보는 아직
+  데이터를 읽지 않는다). 도입 전은 multi_header 0.00, cp949·hard 실패(S0)였다.
+  P1 단계마다 이 표가 개선되는지로 변경을 판단한다.
 
 ## 4. 필수 관문 (`bench/criteria.py`)
 
