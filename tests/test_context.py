@@ -9,6 +9,7 @@ import pytest
 
 from autoetl.core.context import RAW_TABLE, AnalysisContext, quote_identifier
 from autoetl.core.errors import InputError
+from autoetl.core.stages.s00_ingest import HEADER_SCAN_LIMIT, probe_source
 
 
 def _values(ctx: AnalysisContext, column_id: str) -> list[object]:
@@ -186,3 +187,43 @@ def test_quote_identifier_escapes_embedded_quotes() -> None:
     # 식별자 인용은 공용 함수로만: 내부 따옴표는 두 번으로 이스케이프된다.
     assert quote_identifier("c0") == '"c0"'
     assert quote_identifier('a"b') == '"a""b"'
+
+
+# ── 리드 검토 반영 — spec 심층 방어 검사·적재 행 수 대조 ──────────────────────
+
+
+def test_spec_with_non_candidate_delimiter_rejected_before_sql(tmp_path: Path) -> None:
+    # 리드 검토 5: probe를 거치지 않은 spec도 SQL 조립 전에 검사한다.
+    from dataclasses import replace
+
+    csv_path = tmp_path / "data.csv"
+    csv_path.write_text("a,b\n1,2\n", encoding="utf-8")
+    spec = probe_source(csv_path)
+    broken = replace(spec, delimiter="x")
+    with pytest.raises(InputError, match="구분자"):
+        AnalysisContext(csv_path, spec=broken)
+
+
+def test_spec_with_out_of_range_header_rows_rejected(tmp_path: Path) -> None:
+    # 헤더 행 수는 SQL에 들어가는 값이라 허용 범위(0~5)를 검사한다.
+    from dataclasses import replace
+
+    csv_path = tmp_path / "data.csv"
+    csv_path.write_text("a,b\n1,2\n", encoding="utf-8")
+    spec = probe_source(csv_path)
+    broken = replace(spec, header_row_count=HEADER_SCAN_LIMIT + 1)
+    with pytest.raises(InputError, match="헤더 행 수"):
+        AnalysisContext(csv_path, spec=broken)
+
+
+def test_loaded_row_count_must_match_spec(tmp_path: Path) -> None:
+    # 리드 검토 2(대조): 적재한 행 수가 감지한 행 수와 다르면 값 없이
+    # InputError로 멈춘다.
+    from dataclasses import replace
+
+    csv_path = tmp_path / "data.csv"
+    csv_path.write_text("a,b\n1,2\n3,4\n5,6\n", encoding="utf-8")
+    spec = probe_source(csv_path)
+    lying = replace(spec, row_count=spec.row_count + 2)
+    with pytest.raises(InputError, match="행 수와 다르다"):
+        AnalysisContext(csv_path, spec=lying)

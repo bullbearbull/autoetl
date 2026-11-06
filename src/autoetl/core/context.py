@@ -15,7 +15,10 @@ AnalysisContext 하나가 파이프라인 실행 전체의 입력 상태를 뜻�
   특수문자(큰따옴표 등) 때문에 적재가 깨지는 일이 없다.
 - 연결 기본값을 잠근다(심층 방어): 확장 자동 설치·자동 로드 끔, 원본 적재가
   끝나면 외부 접근(파일 함수·ATTACH) 끔. 이후 단계 쿼리는 메모리 테이블만
-  볼 수 있다.
+  볼 수 있다. 밖에서 만든 spec도 SQL에 넣기 전에 검사한다(구분자 후보·
+  헤더 행 수 범위) — probe를 거치는 경로만 보호되면 안 된다.
+- 적재 뒤 raw 행 수와 감지한 행 수를 대조해 다르면 멈춘다(빈 줄 건너뛰기가
+  파일과 어긋나 헤더가 데이터로 들어가는 일을 잡는다). 안내에는 값이 없다.
 - DuckDB 임시 폴더와 인코딩 변환 임시 파일은 close()(예외로 끝나도) 지운다.
 
 이후 단계가 쓰는 자리: normalized_view(S3 타입 추론이 정규화 뷰 이름을
@@ -35,7 +38,12 @@ from typing import Any
 import duckdb
 
 from autoetl.core.errors import InputError
-from autoetl.core.stages.s00_ingest import SourceSpec, probe_source
+from autoetl.core.stages.s00_ingest import (
+    DELIMITER_CANDIDATES,
+    HEADER_SCAN_LIMIT,
+    SourceSpec,
+    probe_source,
+)
 
 RAW_TABLE = "raw"
 """원본 테이블. 컬럼 이름은 코드가 만든 내부 식별자(c0, c1, …)다."""
@@ -85,6 +93,7 @@ class AnalysisContext:
         self.input_path = input_path
         self.source_name = input_path.name
         self.spec = probe_source(input_path) if spec is None else spec
+        self._validate_spec(self.spec, input_path)
         self.header = list(self.spec.header)
         self.row_count = self.spec.row_count
         self.size_bytes = self.spec.size_bytes
@@ -118,17 +127,26 @@ class AnalysisContext:
                 # 만든 내부 식별자(c0, c1, …)로 지정해 적재하고 원래 헤더 이름은
                 # ContextColumn(Python)에만 남는다. 식별자는 [c][0-9] 글자뿐이라
                 # 문장 조립이 안전하다. 구분자도 후보 집합(, ; 탭 |) 안의 한 글자다.
-                # 헤더 행은 probe가 이미 셌으므로 skip으로 건너뛴다(T-0023).
+                # skip은 헤더가 끝나는 물리 줄 위치(빈 줄 포함)라 맨 앞 빈 줄이
+                # 있어도 헤더가 데이터로 적재되지 않는다(T-0023).
                 columns_spec = ", ".join(
                     f"'{column.column_id}': 'VARCHAR'" for column in self.columns
                 )
                 self.connection.execute(
                     f"CREATE TABLE {RAW_TABLE} AS SELECT * FROM read_csv(?, "
-                    f"header=false, skip={self.spec.header_row_count}, "
+                    f"header=false, skip={self.spec.skip_lines}, "
                     f"columns={{{columns_spec}}}, "
                     f"allow_quoted_nulls=false, delim='{self.spec.delimiter}')",
                     [str(self.spec.load_path)],
                 )
+                # 적재한 행 수와 감지한 행 수가 같은지 대조한다. 어긋나면 빈 줄
+                # 건너뛰기가 파일과 다르게 흘러 헤더가 데이터로 들어갔다는 뜻이다.
+                loaded = self.connection.execute(f"SELECT COUNT(*) FROM {RAW_TABLE}").fetchone()
+                if loaded is None or loaded[0] != self.spec.row_count:
+                    raise InputError(
+                        f"적재한 행 수가 감지한 행 수와 다르다({input_path}). "
+                        "헤더 행·빈 행 건너뛰기가 파일과 어긋났다."
+                    )
             except duckdb.Error as exc:
                 # 적재 실패(행마다 컬럼 수가 다른 등)도 입력 문제다. DuckDB 오류
                 # 원문에 파일 내용이 섞일 수 있으므로 종류만 안내한다(금지 패턴 1·6).
@@ -143,6 +161,23 @@ class AnalysisContext:
         except BaseException:
             self.close()
             raise
+
+    @staticmethod
+    def _validate_spec(spec: SourceSpec, input_path: Path) -> None:
+        """심층 방어: probe를 거치지 않은 spec도 SQL 조립 전에 검사한다.
+
+        delimiter와 header_row_count는 SQL 문장에 들어가는 값이라 후보 집합과
+        허용 범위를 여기서도 확인한다(probe의 검사는 probe 경로에만 작동한다).
+        """
+        if spec.delimiter not in DELIMITER_CANDIDATES:
+            raise InputError(f"spec의 구분자가 후보 집합(, ; 탭 |)에 없다({input_path}).")
+        header_rows = spec.header_row_count
+        if not isinstance(header_rows, int) or not 0 <= header_rows <= HEADER_SCAN_LIMIT:
+            raise InputError(
+                f"spec의 헤더 행 수가 허용 범위(0~{HEADER_SCAN_LIMIT})를 벗어났다({input_path})."
+            )
+        if not isinstance(spec.skip_lines, int) or spec.skip_lines < 0:
+            raise InputError(f"spec의 건너뛸 줄 수가 0보다 작다({input_path}).")
 
     def column_id_of(self, position: int) -> str:
         """위치 → 내부 식별자. 단계 쿼리는 이 이름으로 원본 컬럼을 가리킨다."""
