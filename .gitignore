@@ -4,6 +4,9 @@
 # 벤치 생성 데이터셋 (생성 스크립트로만 재현, 커밋하지 않는다)
 bench/datasets/
 
+# 벤치 실행기 결과 (같은 시드로 재현, 커밋하지 않는다)
+bench/results/
+
 # Python
 __pycache__/
 *.py[cod]
