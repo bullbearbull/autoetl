@@ -88,7 +88,7 @@ def run_pipeline(
         ctx.stage_artifacts["s01_sampling"] = sampling
         profiles = s02_profile.run(ctx, ingest, sampling)
         ctx.stage_artifacts["s02_profile"] = profiles
-        types = s03_types.run(ctx, ingest)
+        types = s03_types.run(ctx, ingest, profiles)
         ctx.stage_artifacts["s03_types"] = types
         stats = s04_stats.run(ctx, ingest)
         ctx.stage_artifacts["s04_stats"] = stats
