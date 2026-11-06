@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import pytest
 
-from autoetl.adapters.detectors import name_matches
+from autoetl.adapters.detectors import ColumnSample, name_matches
 from autoetl.adapters.detectors.builtin import (
     BUILTIN_DETECTORS,
     _detect_boolean,
     _detect_code,
+    _detect_date,
     _detect_decimal,
     _detect_email,
     _detect_float,
     _detect_identifier,
     _detect_time,
     _detect_url,
+    _is_date_text,
+    _is_excel_serial,
 )
 from autoetl.contracts import (
     ColumnProfile,
@@ -45,8 +48,6 @@ def test_default_markers_unchanged() -> None:
 
 
 def test_email_detector() -> None:
-    from autoetl.adapters.detectors import ColumnSample
-
     sample = ColumnSample(
         column="email", values=("user1@example.com", "a@b.co.kr"), profile=_profile(2, 2)
     )
@@ -59,8 +60,6 @@ def test_email_detector() -> None:
 
 
 def test_url_and_time_and_boolean() -> None:
-    from autoetl.adapters.detectors import ColumnSample
-
     url = ColumnSample("u", ("https://example.com/a", "http://b.io"), _profile(2, 2))
     url_guess = _detect_url(url)
     assert url_guess is not None and url_guess.semantic_type is SemanticType.URL
@@ -79,8 +78,6 @@ def test_url_and_time_and_boolean() -> None:
 
 
 def test_time_rejects_out_of_range() -> None:
-    from autoetl.adapters.detectors import ColumnSample
-
     sample = ColumnSample("t", ("24:00", "12:60"), _profile(2, 2))
     assert _detect_time(sample) is None
 
@@ -92,23 +89,53 @@ def test_time_rejects_out_of_range() -> None:
         ("2025/06/16", True),
         ("2025.06.16", True),
         ("20250616", True),
-        ("45824", True),  # 엑셀 시리얼(2025-06-16)
-        ("19999", False),  # 시리얼 범위 밖(1954-10-01 이전)
-        ("60001", False),  # 시리얼 범위 밖(2064-05-04 이후)
         ("2025-13-01", False),  # 없는 달
+        ("45824", False),  # 시리얼은 문자열 형식이 아니다(별도 판정)
         ("가나다", False),
     ],
 )
-def test_date_value_shapes(value: str, expected: bool) -> None:
-    from autoetl.adapters.detectors.builtin import _is_date_value
+def test_date_text_shapes(value: str, expected: bool) -> None:
+    assert _is_date_text(value) is expected
 
-    assert _is_date_value(value) is expected
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("45824", True),  # 엑셀 시리얼(2025-06-16)
+        ("19999", False),  # 범위 밖(1954-10-01 이전)
+        ("60001", False),  # 범위 밖(2064-05-04 이후)
+        ("2025-06-16", False),  # 문자열 날짜는 시리얼이 아니다
+    ],
+)
+def test_excel_serial_shapes(value: str, expected: bool) -> None:
+    assert _is_excel_serial(value) is expected
+
+
+def _date_sample(column: str, values: tuple[str, ...]) -> ColumnSample:
+    return ColumnSample(column=column, values=values, profile=_profile(2, len(values)))
+
+
+def test_serial_only_column_needs_hint_or_mixed_formats() -> None:
+    # 재검토 #3: 시리얼은 범위만으로 날짜 근거가 못 된다. 이름 힌트가 없는
+    # 시리얼뿐인 컬럼(2만~6만 정수 가격 등)은 date가 아니다.
+    serials = tuple(str(value) for value in range(20001, 20041))
+    assert _detect_date(_date_sample("value", serials)) is None
+    # 날짜형 이름 힌트가 있으면 시리얼만으로도 날짜다.
+    guess = _detect_date(_date_sample("order_date", serials))
+    assert guess is not None and guess.physical_type is PhysicalType.DATE
+    # 다른 날짜 형식이 하나라도 섞여 있으면(형식 혼재) 힌트 없이도 시리얼이 근거가 된다.
+    mixed = ("2025-06-16", *serials)
+    guess = _detect_date(_date_sample("value", mixed))
+    assert guess is not None
+    assert guess.confidence == 1.0
+
+
+def _code_sample(column: str, values: tuple[str, ...]) -> ColumnSample:
+    return ColumnSample(column=column, values=values, profile=_profile(2, len(values)))
 
 
 def test_code_detector_requires_leading_zero() -> None:
-    from autoetl.adapters.detectors import ColumnSample
-
-    padded = ColumnSample("code", ("000123", "456789", "099999"), _profile(3, 3))
+    padded = _code_sample("code", ("000123", "456789", "099999", "000007"))
     guess = _detect_code(padded)
     assert guess is not None
     assert guess.physical_type is PhysicalType.STRING  # 정수로 읽으면 0을 잃는다
@@ -116,17 +143,31 @@ def test_code_detector_requires_leading_zero() -> None:
     assert guess.pad_width == 6
 
     # 앞자리 0이 하나도 없으면 코드 근거가 없다(일반 정수).
-    plain = ColumnSample("n", ("123", "45678"), _profile(2, 2))
+    plain = _code_sample("n", ("123", "45678", "901", "82"))
     assert _detect_code(plain) is None
 
     # '0' 하나는 0일 뿐 패딩 근거가 아니다.
-    zero = ColumnSample("n", ("0", "42"), _profile(2, 2))
+    zero = _code_sample("n", ("0", "42", "17", "9"))
     assert _detect_code(zero) is None
 
 
-def test_decimal_detector_currency_and_precision() -> None:
-    from autoetl.adapters.detectors import ColumnSample
+def test_code_padding_evidence_needs_two_values_and_share() -> None:
+    # 재검토 #4: 앞자리 0 값 하나로 정수 컬럼 전체가 코드가 되지 않는다.
+    # '07' 하나는 패딩 근거가 못 된다.
+    single = _code_sample("n", tuple(["07"] + [str(v) for v in range(1, 901)]))
+    assert _detect_code(single) is None
 
+    # 2개 이상이어도 표본의 1% 미만이면 근거가 못 된다(2/300 = 0.67%).
+    sparse = _code_sample("n", ("07", "09", *[str(v) for v in range(10, 308)]))
+    assert _detect_code(sparse) is None
+
+    # 2개 이상 + 1% 이상이면 코드다.
+    enough = _code_sample("code", ("07", "09", "003", *[str(v) for v in range(10, 209)]))
+    guess = _detect_code(enough)
+    assert guess is not None and guess.pad_width == 3
+
+
+def test_decimal_detector_currency_and_precision() -> None:
     sample = ColumnSample("amount", ("45000", "45,000", "45,000원", "₩45,000"), _profile(4, 4))
     guess = _detect_decimal(sample)
     assert guess is not None
@@ -144,16 +185,12 @@ def test_decimal_detector_currency_and_precision() -> None:
 
 
 def test_float_detector_exponent() -> None:
-    from autoetl.adapters.detectors import ColumnSample
-
     sample = ColumnSample("v", ("1E5", "3.14e-2"), _profile(2, 2))
     guess = _detect_float(sample)
     assert guess is not None and guess.physical_type is PhysicalType.FLOAT
 
 
 def test_identifier_requires_unique_integers() -> None:
-    from autoetl.adapters.detectors import ColumnSample
-
     unique = ColumnSample("id", ("1", "2", "3"), _profile(3, 3))
     guess = _detect_identifier(unique)
     assert guess is not None and guess.semantic_type is SemanticType.IDENTIFIER

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+from typing import cast
 
 import pytest
 from bench.answer import (
@@ -238,3 +239,78 @@ def test_missing_markers_normalize_to_null(tmp_path: Path) -> None:
         s03_types.run(ctx, ingest, profiles)
         rows = ctx.connection.execute(f'SELECT "c0", "c1" FROM {ctx.normalized_view}').fetchall()
     assert rows == [(5, "가"), (None, None), (7, None)]
+
+
+# ── 리드 검토 반영 — 정수 반올림·표본 편향·시리얼 게이트·패딩 게이트 ─────────
+
+
+def _run_s3(
+    tmp_path: Path, name: str, header: str, rows: list[str]
+) -> tuple[TypeAssignment, list[object], dict[str, int]]:
+    """S0~S3만 돌려 (판정, 정규화 값, 실패 수)를 돌려준다."""
+    path = tmp_path / f"{name}.csv"
+    path.write_text("\n".join([header, *rows]) + "\n", encoding="utf-8")
+    spec = s00_ingest.probe_source(path)
+    with AnalysisContext(path, spec=spec) as ctx:
+        ingest = s00_ingest.run(ctx, spec)
+        profiles = s02_profile.run(ctx, ingest, s01_sampling.run(ctx))
+        types = s03_types.run(ctx, ingest, profiles)
+        values = ctx.connection.execute(f'SELECT "c0" FROM {ctx.normalized_view}').fetchall()
+        failures = cast("dict[str, int]", ctx.stage_artifacts[FAILURES_KEY])
+    return types[0], [row[0] for row in values], failures
+
+
+def test_integer_normalization_does_not_round_decimals(tmp_path: Path) -> None:
+    # 리드 재현 #1: 정수로 판정된 컬럼의 소수('.5')는 반올림되지 않고 NULL +
+    # 실패 수로 드러난다(DuckDB TRY_CAST는 6으로 반올림했었다).
+    rows = [str(i * 7 + 3) for i in range(200)]
+    rows[50] = ".5"
+    assignment, values, failures = _run_s3(tmp_path, "round", "value", rows)
+    assert assignment.physical_type is PhysicalType.INTEGER
+    assert values[50] is None  # 반올림 값(1 또는 0)이 아니다
+    assert failures == {"value": 1}
+    assert any("정규화 실패 1값" in note for note in assignment.notes)
+
+
+def test_decimal_tail_after_thousand_integers_is_decimal(tmp_path: Path) -> None:
+    # 리드 재현 #2: 정수 1500행 뒤 소수 100행 — 시드 고정 무작위 표본이 소수를
+    # 보고(전수 확인까지 마쳐) decimal이 된다. 정수가 아니다.
+    rows = [str(i * 3 + 1) for i in range(1500)] + [f"{i}.5" for i in range(100)]
+    assignment, values, failures = _run_s3(tmp_path, "tail_dec", "value", rows)
+    assert assignment.physical_type is PhysicalType.DECIMAL
+    assert all(value is not None for value in values)
+    assert failures == {"value": 0}
+
+
+def test_text_tail_after_thousand_dates_is_not_date(tmp_path: Path) -> None:
+    # 리드 재현 #2: 날짜 1000행 뒤 텍스트 84행(7.7%) — 앞쪽 표본만 보면
+    # 적합률 1.0이지만 무작위 표본이 텍스트를 본다. date가 아니다.
+    rows = [f"2025-{1 + i % 12:02d}-{1 + i % 28:02d}" for i in range(1000)]
+    rows += ["가나다" for _ in range(84)]
+    assignment, _, _ = _run_s3(tmp_path, "tail_txt", "memo_date", rows)
+    assert assignment.physical_type is not PhysicalType.DATE
+
+
+def test_unhinted_serial_range_integers_stay_integer(tmp_path: Path) -> None:
+    # 리드 재현 #3: 이름 힌트 없는 2만~6만 정수(가격 등)는 날짜가 아니다.
+    rows = [str(20000 + (i * 137) % 40000) for i in range(300)]
+    assignment, _, _ = _run_s3(tmp_path, "serialish", "value", rows)
+    assert assignment.physical_type is PhysicalType.INTEGER
+
+
+def test_serial_only_date_with_name_hint(tmp_path: Path) -> None:
+    # 리드 재현 #3: 시리얼뿐인 'order_date'는 이름 힌트로 날짜가 된다.
+    rows = [str(20000 + (i * 137) % 40000) for i in range(300)]
+    assignment, _, _ = _run_s3(tmp_path, "serial_date", "order_date", rows)
+    assert assignment.physical_type is PhysicalType.DATE
+    assert assignment.detector == "builtin.date"
+
+
+def test_single_padded_value_keeps_column_integer(tmp_path: Path) -> None:
+    # 리드 재현 #4: 정수 컬럼에 '07' 하나 — 패딩 근거(2개 이상 + 1%)가 안 돼
+    # 정수를 유지한다(LPAD로 전 컬럼이 2자리가 되지 않는다).
+    rows = [str(i % 50 + 1) for i in range(900)]
+    rows[500] = "07"
+    assignment, values, _ = _run_s3(tmp_path, "one_pad", "num", rows)
+    assert assignment.physical_type is PhysicalType.INTEGER
+    assert values[500] == 7  # 정수로 읽는다(패딩 복원 없음)

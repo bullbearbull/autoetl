@@ -33,11 +33,13 @@ from autoetl.adapters.detectors.builtin import (
 from autoetl.contracts import (
     ColumnProfile,
     IngestManifest,
+    PhysicalType,
+    SemanticType,
     TypeAlternative,
     TypeAssignment,
 )
 from autoetl.core.context import RAW_TABLE, AnalysisContext, quote_identifier
-from autoetl.core.stages.s01_sampling import SAMPLE_RELATION_KEY
+from autoetl.core.stages.s01_sampling import DEFAULT_SEED, SAMPLE_RELATION_KEY
 from autoetl.core.stages.s02_profile import DEFAULT_MISSING_MARKERS
 
 FIT_THRESHOLD = 0.98
@@ -81,7 +83,13 @@ def _normalize_expression(column_id: str, rule: NormalizationRule, pad_width: in
     if rule is NormalizationRule.IDENTITY:
         inner = quoted
     elif rule is NormalizationRule.INTEGER:
-        inner = f"TRY_CAST({quoted} AS BIGINT)"
+        # 엄격한 정수 형태만 변환한다. DuckDB의 TRY_CAST('5.5' AS BIGINT)는
+        # 실패하지 않고 6으로 반올림한다(재검토 지적) — 소수·지수 표기는
+        # NULL로 두고 정규화 실패로 센다.
+        inner = (
+            f"CASE WHEN regexp_matches({quoted}, '^\\s*[+-]?\\d+\\s*$') "
+            f"THEN TRY_CAST({quoted} AS BIGINT) ELSE NULL END"
+        )
     elif rule is NormalizationRule.DECIMAL:
         cleaned = f"regexp_replace({quoted}, '[₩원,\\s]', '', 'g')"
         inner = f"TRY_CAST({cleaned} AS DECIMAL(38, 10))"
@@ -123,11 +131,22 @@ def _hint_bonus(detector: Detector, column: str) -> float:
 
 
 def _sample_values(
-    ctx: AnalysisContext, table: str, column_id: str, predicate: str, limit: int
+    ctx: AnalysisContext,
+    table: str,
+    column_id: str,
+    predicate: str,
+    limit: int,
+    seed: int,
 ) -> tuple[str, ...]:
+    """판정 표본 — 시드 고정 무작위 표본(앞쪽 편향 금지, 재검토 #2).
+
+    결측 아닌 값을 모은 subquery에 DuckDB reservoir 표본을 얹는다. 같은
+    시드는 같은 표본을 낸다.
+    """
     quoted = quote_identifier(column_id)
     rows = ctx.connection.execute(
-        f"SELECT {quoted} FROM {table} WHERE NOT ({predicate}) LIMIT {limit}"
+        f"SELECT {quoted} FROM (SELECT {quoted} FROM {table} "
+        f"WHERE NOT ({predicate})) USING SAMPLE {limit} ROWS (reservoir, {seed})"
     ).fetchall()
     return tuple(row[0] for row in rows if isinstance(row[0], str))
 
@@ -156,6 +175,7 @@ def run(
     fit_threshold: float = FIT_THRESHOLD,
     ambiguous_gap: float = AMBIGUOUS_GAP,
     sample_limit: int = DETECT_SAMPLE_LIMIT,
+    seed: int = DEFAULT_SEED,
 ) -> list[TypeAssignment]:
     """컬럼별 물리·의미 타입을 확정하고 정규화 뷰를 컨텍스트에 남긴다."""
     profile_by_name = {profile.column: profile for profile in profiles}
@@ -164,12 +184,12 @@ def run(
 
     assignments: list[TypeAssignment] = []
     view_columns: list[str] = []
-    inners: list[str] = []
+    failures: dict[str, int] = {}
 
     for column in ingest.columns:
         column_id = ctx.column_id_of(column.index)
         predicate = _missing_predicate(column_id, missing_markers)
-        values = _sample_values(ctx, profile_table, column_id, predicate, sample_limit)
+        values = _sample_values(ctx, profile_table, column_id, predicate, sample_limit, seed)
         sample = ColumnSample(
             column=column.name, values=values, profile=profile_by_name[column.name]
         )
@@ -182,18 +202,57 @@ def run(
         passing = [pair for pair in candidates if pair[1].confidence >= fit_threshold]
         # 임계치를 넘은 후보가 없으면(커스텀 탐지기 목록 등) 최선의 후보로 확정한다.
         ranked = _rank(passing if passing else candidates, column.name)
-        top_detector, top = ranked[0]
+        if not ranked:
+            # 어떤 탐지기도 후보를 내지 않은 경우(빈 커스텀 목록) — 문자열로 둔다.
+            assignments.append(
+                TypeAssignment(
+                    column=column.name,
+                    physical_type=PhysicalType.STRING,
+                    semantic_type=SemanticType.FREE_TEXT,
+                    detector="builtin.fallback",
+                    confidence=0.0,
+                )
+            )
+            view_columns.append(
+                f"CASE WHEN {predicate} THEN NULL ELSE {quote_identifier(column_id)} END "
+                f"AS {quote_identifier(column_id)}"
+            )
+            failures[column.name] = 0
+            continue
+
+        # 전수 확인(재검토 지적): 표본은 무작위라도 전부를 보지 않으면 뒤늦게
+        # 나오는 이형 값을 놓친다. 최상위 후보의 전수 실패 비율(값이 있는데
+        # 정규화 결과가 NULL)이 1 - 임계치를 넘으면 다음 후보로 내려가 같은
+        # 확인을 한다. 어느 후보도 못 넘으면 전수 실패가 가장 적은 후보로
+        # 확정한다.
+        nonmissing = profile_by_name[column.name].count
+        confirmation: list[tuple[int, int, Detector, TypeGuess, str]] = []
+        for detector, guess in ranked:
+            inner = _normalize_expression(column_id, guess.normalization, guess.pad_width)
+            row = ctx.connection.execute(
+                f"SELECT COUNT(*) FROM {RAW_TABLE} WHERE NOT ({predicate}) AND ({inner}) IS NULL"
+            ).fetchone()
+            full_failures = int(row[0]) if row is not None else 0
+            confirmation.append((full_failures, -detector.priority, detector, guess, inner))
+            if nonmissing == 0 or full_failures <= (1 - fit_threshold) * nonmissing:
+                break
+        else:
+            confirmation.sort(key=lambda item: (item[0], item[1], item[2].name))
+        failure_count, _, top_detector, top, inner = confirmation[0]
 
         notes: list[str] = []
-        if len(ranked) > 1:
-            top_score = top.confidence + _hint_bonus(top_detector, column.name)
-            second_score = ranked[1][1].confidence + _hint_bonus(ranked[1][0], column.name)
-            if top_score - second_score < ambiguous_gap:
+        others = [pair for pair in ranked if pair[0] is not top_detector]
+        if others:
+            chosen_score = top.confidence + _hint_bonus(top_detector, column.name)
+            second_score = others[0][1].confidence + _hint_bonus(others[0][0], column.name)
+            if chosen_score - second_score < ambiguous_gap:
                 notes.append(AMBIGUOUS_NOTE)
         alternatives = [
             TypeAlternative(semantic_type=guess.semantic_type, confidence=guess.confidence)
             for _, guess in ranked[1:3]
         ]
+        if failure_count:
+            notes.append(f"정규화 실패 {failure_count}값")
 
         assignments.append(
             TypeAssignment(
@@ -208,8 +267,7 @@ def run(
                 notes=notes,
             )
         )
-        inner = _normalize_expression(column_id, top.normalization, top.pad_width)
-        inners.append(inner)
+        failures[column.name] = failure_count
         view_columns.append(
             f"CASE WHEN {predicate} THEN NULL ELSE {inner} END AS {quote_identifier(column_id)}"
         )
@@ -219,18 +277,5 @@ def run(
         f"SELECT {', '.join(view_columns)} FROM {RAW_TABLE}"
     )
     ctx.normalized_view = NORMALIZED_VIEW
-
-    # 정규화 실패 수: 값이 있는데(결측 아님) 정규화 결과가 NULL인 행.
-    failures: dict[str, int] = {}
-    for assignment, column, inner in zip(assignments, ingest.columns, inners, strict=True):
-        column_id = ctx.column_id_of(column.index)
-        predicate = _missing_predicate(column_id, missing_markers)
-        row = ctx.connection.execute(
-            f"SELECT COUNT(*) FROM {RAW_TABLE} WHERE NOT ({predicate}) AND ({inner}) IS NULL"
-        ).fetchone()
-        count = int(row[0]) if row is not None else 0
-        failures[assignment.column] = count
-        if count:
-            assignment.notes.append(f"정규화 실패 {count}값")
     ctx.stage_artifacts[FAILURES_KEY] = failures
     return assignments

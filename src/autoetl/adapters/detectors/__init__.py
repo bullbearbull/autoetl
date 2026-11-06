@@ -100,8 +100,13 @@ def name_matches(column: str, keywords: Collection[str]) -> bool:
 HINT_KEYWORDS: dict[str, tuple[str, ...]] = {
     "amount": ("price", "amount", "금액", "가격", "단가", "매출", "총액", "cost", "fee"),
     "count": ("count", "수량", "quantity", "qty", "건수", "횟수"),
+    "date": ("date", "dt", "일자", "날짜", "일시"),
 }
-"""힌트 계열별 키워드. S3이 보너스를 줄 때, 탐지기가 의미 타입을 고를 때 쓴다."""
+"""힌트 계열별 키워드. S3이 보너스를 줄 때, 탐지기가 근거 게이트를 열 때 쓴다.
+
+'date' 계열은 랭킹 보너스가 아니라 엑셀 시리얼 판정의 근거 게이트(builtin
+날짜 탐지기)로만 쓴다 — 시리얼만 있는 컬럼이 날짜인지는 이름 힌트가 결정한다.
+"""
 
 
 def hint_matches(column: str, family: str) -> bool:

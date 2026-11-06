@@ -60,18 +60,22 @@ def _fit(values: tuple[str, ...], predicate: Callable[[str], object]) -> float:
     return sum(1 for value in values if predicate(value)) / len(values)
 
 
-def _is_date_value(value: str) -> bool:
+def _is_date_text(value: str) -> bool:
+    """문자열 날짜 4형식(ISO·슬래시·점·밀집) 판정."""
     for fmt in DATE_FORMATS:
         try:
             datetime.strptime(value, fmt)
             return True
         except ValueError:
             continue
-    if _SIGNED_INT.fullmatch(value):
-        # 엑셀 날짜 시리얼(1899-12-30 기준 경과일) — 범위 제한이 없으면 모든
-        # 정수가 날짜가 되어 버린다.
-        return EXCEL_SERIAL_MIN <= int(value) <= EXCEL_SERIAL_MAX
     return False
+
+
+def _is_excel_serial(value: str) -> bool:
+    """엑셀 날짜 시리얼(1899-12-30 기준 경과일) 판정 — 범위 제한(1954~2064)."""
+    if _SIGNED_INT.fullmatch(value) is None:
+        return False
+    return EXCEL_SERIAL_MIN <= int(value) <= EXCEL_SERIAL_MAX
 
 
 def _detect_email(sample: ColumnSample) -> TypeGuess | None:
@@ -142,7 +146,19 @@ def _detect_timestamp(sample: ColumnSample) -> TypeGuess | None:
 
 
 def _detect_date(sample: ColumnSample) -> TypeGuess | None:
-    fit = _fit(sample.values, _is_date_value)
+    """날짜(문자열 4형식 + 엑셀 시리얼).
+
+    시리얼은 범위 안의 정수라는 것만으로는 날짜 근거가 되지 못한다(재검토
+    지적: 이름 힌트 없는 2만~6만 정수 가격이 날짜로 뒤집힌다). 시리얼이
+    근거가 되려면 둘 중 하나여야 한다.
+
+    - 같은 컬럼에 문자열 날짜 형식 값이 하나라도 있다(형식 혼재).
+    - 컬럼 이름이 날짜형 힌트다(date·dt·일자·날짜·일시).
+    """
+    text_fit = _fit(sample.values, _is_date_text)
+    serial_fit = _fit(sample.values, _is_excel_serial)
+    serial_is_evidence = text_fit > 0.0 or hint_matches(sample.column, "date")
+    fit = text_fit + (serial_fit if serial_is_evidence else 0.0)
     if fit <= 0.0:
         return None
     return TypeGuess(
@@ -156,15 +172,17 @@ def _detect_date(sample: ColumnSample) -> TypeGuess | None:
 def _detect_code(sample: ColumnSample) -> TypeGuess | None:
     """앞자리 0이 있는 숫자 코드 — 정수로 읽으면 값을 잃는다(0 탈락 함정).
 
-    '0' 하나는 0일 뿐 패딩 근거가 아니므로 제외한다. leading_zero 변형처럼
-    일부 행에서 0이 떼어져 자릿수가 섞여도 '앞자리 0이 하나라도 있으면'
-    발동한다(자릿수는 최댓값으로 복원).
+    패딩 근거는 값 하나로 성립하지 않는다(재검토 지적: '07' 하나로 정수
+    컬럼 전체가 코드가 됐다). 길이 2 이상이고 0으로 시작하는 값이 2개
+    이상이면서 표본의 1% 이상일 때만 코드로 본다. leading_zero 변형처럼
+    일부 행에서 0이 떼어져 자릿수가 섞여도 발동한다(자릿수는 최댓값으로
+    복원). '0' 하나는 0일 뿐 패딩 근거가 아니다.
     """
     all_digits = _fit(sample.values, lambda v: _UNSIGNED_INT.fullmatch(v) is not None)
     if all_digits <= 0.0:
         return None
-    has_padding = any(len(value) > 1 and value.startswith("0") for value in sample.values)
-    if not has_padding:
+    padded = [value for value in sample.values if len(value) > 1 and value.startswith("0")]
+    if len(padded) < 2 or len(padded) < 0.01 * len(sample.values):
         return None
     return TypeGuess(
         physical_type=PhysicalType.STRING,
