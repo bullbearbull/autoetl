@@ -289,6 +289,7 @@ def test_cp1252_file_is_not_cp949_and_warns(tmp_path: Path) -> None:
 def test_year_header_with_integer_data_stays_one_header_row(tmp_path: Path) -> None:
     # 리드 재현(#119): 연도형 숫자 헤더 + 인구 같은 큰 정수 데이터 — 둘 다
     # 정수라 세부 형태만으로 구분되지 않는다. 자릿수 비교로 1행을 유지한다.
+    # #122: 자릿수 근거만으로 1행을 정했으니 확인 요청 경고도 남는다.
     path = tmp_path / "years_int.csv"
     lines = ["지역,2020,2021,2022"]
     lines += [
@@ -300,6 +301,7 @@ def test_year_header_with_integer_data_stays_one_header_row(tmp_path: Path) -> N
     assert spec.header_row_count == 1
     assert spec.header == ["지역", "2020", "2021", "2022"]
     assert spec.row_count == 12
+    assert any("숫자 모양 헤더" in warning for warning in spec.warnings)
 
 
 def test_missing_markers_in_first_data_row_are_not_header_evidence(tmp_path: Path) -> None:
@@ -314,6 +316,34 @@ def test_missing_markers_in_first_data_row_are_not_header_evidence(tmp_path: Pat
     assert spec.header_row_count == 1
     assert spec.header == ["id", "qty", "price", "note"]
     assert spec.row_count == 4
+
+
+# ── 리드 재검토 #122 반영 — 자릿수 비교의 경계 사례(커지는 순서 데이터) ──────
+
+
+def test_headerless_increasing_numeric_file_stays_zero_rows(tmp_path: Path) -> None:
+    # 리드 재현(#122): 헤더 없는 값이 커지는 순서 숫자 파일(일련번호형
+    # i, i*3, i*7) — 자릿수 범위를 표본 전체(첫 행 제외)로 잡아 0행을
+    # 유지한다. 예전엔 첫 행('0','0','0')이 컬럼 이름이 되고 행이 사라졌다.
+    path = tmp_path / "increasing.csv"
+    lines = [f"{i},{i * 3},{i * 7}" for i in range(20)]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    spec = probe_source(path)
+    assert spec.header_row_count == 0
+    assert spec.header == ["col_1", "col_2", "col_3"]
+    assert spec.row_count == 20
+    assert any("col_N" in warning for warning in spec.warnings)
+
+
+def test_headerless_fast_growing_column_stays_zero_rows(tmp_path: Path) -> None:
+    # 리드 재현(#122): 한 컬럼(i*1000)만 빠르게 커지는 헤더 없는 파일 —
+    # 한 컬럼 어긋남만으로 1행 판정을 하지 않는다(과반 근거).
+    path = tmp_path / "fast_growth.csv"
+    lines = [f"{i},{i * 3},{i * 1000}" for i in range(20)]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    spec = probe_source(path)
+    assert spec.header_row_count == 0
+    assert spec.row_count == 20
 
 
 def test_probe_memory_does_not_scale_with_file_size(tmp_path: Path) -> None:

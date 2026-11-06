@@ -19,7 +19,10 @@
   안 되기 때문이다(대화 모드에서는 이 경고로 사용자 확인을 받는다).
   신뢰도가 낮으면 경고를 남기고 비대화 모드 SOP대로 latin-1으로 다시
   읽는다. UTF-8이 아니면 임시 UTF-8 파일로 변환해 적재하고 컨텍스트가
-  실행 끝(예외 포함)에 지운다.
+  실행 끝(예외 포함)에 지운다. CP949 우선 규칙의 대가: GBK·Big5 같은
+  다른 2바이트 코드페이지 표본도 cp949로 끝까지 읽혀 경고 없이 cp949로
+  판정될 수 있다. 한국 데이터 우선 제품이라 받아들인 것이고, 인코딩을
+  직접 지정하는 옵션은 이후 CLI 과업에서 다룬다(리드 확인).
 - 구분자: 앞부분 표본(첫 50줄)에서 후보(쉼표·세미콜론·탭·파이프)를 골라
   표본의 필드 수 일관성으로 확정한다. 인용 필드 안의 구분자는 csv 모듈이
   처리한다.
@@ -30,9 +33,13 @@
   0.5 이상, 최대 5행). 다중 행 헤더면 컬럼 이름은 마지막 헤더 행(필드
   행)이고 applied_normalizations에 남긴다. 첫 행이 데이터 형태면 헤더
   없음(0행)은 강형 칸 전부가 데이터의 세부 형태(정수·소수·날짜)와 같고
-  값 자릿수까지 데이터 범위 안일 때만 인정한다 — 연도형 숫자
-  헤더('2020', '2021'…)는 소수 데이터와 세부 형태로, 인구 같은 큰 정수
-  데이터와는 자릿수로 구분돼 1행을 유지한다. 헤더가 없다고 판정하면
+  값 자릿수까지 데이터 범위 안일 때만 인정한다 — 자릿수 범위는 표본에서
+  첫 행을 뺀 나머지 전체로 잡고(앞쪽 작은 값이 빠지면 커지는 순서
+  데이터를 헤더로 잘못 본다) 숫자 강형 컬럼 **과반**에서 벗어나야 헤더
+  근거다(한 컬럼만 어긋나는 것은 일련번호 같은 커지는 순서 데이터다).
+  연도형 숫자 헤더('2020', '2021'…)는 소수 데이터와 세부 형태로, 인구 같은
+  큰 정수 데이터와는 자릿수로 구분돼 1행을 유지하며, 자릿수 근거만으로
+  1행을 정했으면 확인 요청 경고를 남긴다. 헤더가 없다고 판정하면
   col_1..N으로 이름 짓고 경고를 남긴다
   (SOP). 낮은 근거로 판정을 바꾸면 데이터 행이 사라지고 셀 값이 컬럼
   이름(로그·LLM 메타데이터로 나가는 값)이 되기 때문이다.
@@ -436,9 +443,24 @@ def _column_profiles(rows: list[list[str]]) -> dict[int, str]:
     return strong
 
 
+def _digit_range_contains(sample_rows: list[list[str]], index: int, digits: int) -> bool:
+    """첫 행 자릿수가 데이터 자릿수 범위 안인가.
+
+    범위는 표본에서 첫 행을 뺀 나머지 전체(앞쪽 작은 값 포함)로 잰다 —
+    프로파일 행(검사 구간 뒤)만 쓰면 값이 커지는 순서(일련번호)의 앞쪽
+    작은 값이 빠져 첫 행이 범위 밖이 되어버린다(재검토 #122).
+    """
+    data_digits = [
+        _digit_count(row[index])
+        for row in sample_rows[1:]
+        if index < len(row) and row[index].strip() and not _is_missing_marker(row[index])
+    ]
+    return bool(data_digits) and min(data_digits) <= digits <= max(data_digits)
+
+
 def _header_row_count(
-    rows: list[list[str]], strong: dict[int, str], profile_rows: list[list[str]]
-) -> int:
+    rows: list[list[str]], strong: dict[int, str], sample_rows: list[list[str]]
+) -> tuple[int, bool]:
     """위쪽 행이 데이터 형태와 다른 동안 헤더로 센다(최대 HEADER_SCAN_LIMIT행).
 
     기본은 헤더 1행이다. 낮은 근거로 0행·2행 이상으로 판정하면 데이터 행이
@@ -447,11 +469,17 @@ def _header_row_count(
     (빈 칸과 흔한 결측 표기는 근거로 세지 않는다), (3) 그 값의 텍스트 비율
     0.5 이상이 연속해야 한다. 첫 행이 데이터 형태면 헤더 없음(0행)은 강형
     칸 전부가 데이터의 세부 형태(정수·소수·날짜)와 같고 값 자릿수까지
-    데이터 범위 안일 때만 인정한다 — 연도형 숫자 헤더('2020')는 소수
-    데이터와 세부 형태로, 인구 같은 큰 정수 데이터와는 자릿수로 구분된다.
+    데이터 범위(표본에서 첫 행을 뺀 나머지) 안일 때만 인정한다. 자릿수가
+    범위 밖인 숫자 강형 컬럼이 **과반**일 때만 헤더 근거로 삼는다 — 한
+    컬럼만 어긋나는 것은 일련번호처럼 값이 커지는 순서 데이터다. 연도형
+    숫자 헤더('2020')는 소수 데이터와 세부 형태로, 인구 같은 큰 정수
+    데이터와는 자릿수로 구분된다.
+
+    Returns:
+        (헤더 행 수, 자릿수 근거만으로 1행으로 판정했는가 — 경고용).
     """
     if len(strong) < MIN_STRONG_COLUMNS:
-        return 1  # 근거가 될 강형 컬럼이 부족하다 — 관례대로 1행 헤더.
+        return 1, False  # 근거가 될 강형 컬럼이 부족하다 — 관례대로 1행 헤더.
     indexes = sorted(strong)
     count = 0
     for row in rows:
@@ -467,23 +495,23 @@ def _header_row_count(
             break  # 데이터 형태다.
         count += 1
     if count:
-        return count
+        return count, False
     first = rows[0]
+    numeric: list[int] = []
     for index in indexes:
         cell = first[index] if index < len(first) else ""
         if not cell.strip() or _is_missing_marker(cell) or _profile_kind(cell) != strong[index]:
-            return 1  # 세부 형태가 다르거나 판단 재료가 없다 — 기본 1행.
-        if strong[index] not in ("int", "float"):
-            continue  # 날짜는 자릿수가 거의 일정하다 — 형태 검사로 충분하다.
-        digits = _digit_count(cell)
-        data_digits = [
-            _digit_count(row[index])
-            for row in profile_rows
-            if index < len(row) and row[index].strip() and not _is_missing_marker(row[index])
-        ]
-        if data_digits and not min(data_digits) <= digits <= max(data_digits):
-            return 1  # 자릿수가 데이터 범위 밖이다 — 헤더 근거로 충분하다.
-    return 0  # 첫 행까지 데이터와 세부 형태·자릿수가 같다 — 헤더가 없다.
+            return 1, False  # 세부 형태가 다르거나 판단 재료가 없다 — 기본 1행.
+        if strong[index] in ("int", "float"):
+            numeric.append(index)  # 날짜는 자릿수가 거의 일정하다 — 형태 검사로 충분하다.
+    outside = sum(
+        1
+        for index in numeric
+        if not _digit_range_contains(sample_rows, index, _digit_count(first[index]))
+    )
+    if numeric and outside * 2 > len(numeric):
+        return 1, True  # 자릿수 근거만으로 1행 — 확인 요청 경고를 남긴다.
+    return 0, False  # 첫 행까지 데이터와 세부 형태·자릿수가 같다 — 헤더가 없다.
 
 
 def _normalized_names(header_row: list[str]) -> list[str]:
@@ -544,7 +572,16 @@ def probe_source(path: Path) -> SourceSpec:
         # 오염시키지 않게). 표본이 검사 구간보다 짧으면 첫 행만 빼고 쓴다.
         profile_rows = sample_rows[HEADER_SCAN_LIMIT:] or sample_rows[1:]
         strong = _column_profiles(profile_rows)
-        header_rows = _header_row_count(sample_rows[:HEADER_SCAN_LIMIT], strong, profile_rows)
+        header_rows, numeric_header = _header_row_count(
+            sample_rows[:HEADER_SCAN_LIMIT], strong, sample_rows
+        )
+        if numeric_header:
+            # 자릿수 비교만으로 1행을 정했다 — 반대 방향(일련번호 데이터를
+            # 헤더로 보는 것)의 위험이 있으니 확인을 요청한다(값은 없다).
+            warnings.append(
+                "숫자 모양 헤더로 판정했다. 확인이 필요하다 — "
+                "첫 행 자릿수가 데이터 자릿수 범위 밖이다"
+            )
         applied: list[str] = []
         if header_rows == 0:
             names = [f"col_{index + 1}" for index in range(width)]
