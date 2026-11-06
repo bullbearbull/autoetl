@@ -14,6 +14,7 @@ from autoetl.adapters.detectors.builtin import (
     _detect_email,
     _detect_float,
     _detect_identifier,
+    _detect_integer,
     _detect_time,
     _detect_url,
     _is_date_text,
@@ -230,3 +231,18 @@ def test_name_hint_word_boundary(column: str, keyword: str, expected: bool) -> N
     # 밑줄·하이픈을 경계로 본다. 붙여 쓴 camelCase 합성(unitAmount)은 경계가
     # 없어 일치하지 않는다(오인 방지가 우선).
     assert name_matches(column, (keyword,)) is expected
+
+
+def _zen(text: str) -> str:
+    """ASCII 숫자·콜론을 전각으로 바꾼다(린트 RUF001 — 리터럴 대신 조합)."""
+    return "".join(
+        chr(0xFF10 + int(ch)) if ch.isdigit() else chr(0xFF1A) if ch == ":" else ch for ch in text
+    )
+
+
+def test_ascii_only_digit_shapes() -> None:
+    # 재검토 4차 정리: 정규화(DuckDB RE2)는 ASCII 숫자만 받는다 — 탐지기도
+    # re.ASCII로 같은 기준을 쓴다. 전각 숫자는 정수 형태로 보지 않는다.
+    fullwidth = ColumnSample("v", (_zen("1007"), _zen("1008")), _profile(2, 2))
+    assert _detect_integer(fullwidth) is None
+    assert _detect_time(ColumnSample("t", (_zen("09:30"),), _profile(1, 1))) is None

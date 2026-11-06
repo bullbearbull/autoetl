@@ -414,3 +414,53 @@ def test_scale_38_column_does_not_crash(tmp_path: Path) -> None:
     assert assignment.scale == 37  # 38이 아니라 상한 37
     assert values[-1] is None  # 반올림·절단 없이 실패
     assert failures == {"value": 1}
+
+
+# ── 리드 재검토(4차) 반영 — 폴백 하향·소수초 상한 ──────────────────────
+
+
+def test_fullwidth_digits_fall_back_to_string(tmp_path: Path) -> None:
+    # 리드 재현: 전각 숫자는 정규화(DuckDB RE2, ASCII만)에서 전부 실패한다.
+    # 통과 후보가 모두 탈락하면 나머지 후보(free_text 폴백 포함)까지 내려가
+    # 무손실 문자열로 확정한다 — 값이 전부 NULL인 integer가 되지 않는다.
+    def zen(text: str) -> str:
+        return "".join(chr(0xFF10 + int(digit)) for digit in text)  # RUF001 회피
+
+    rows = [zen(str(1000 + i)) for i in range(500)]
+    assignment, values, failures = _run_s3(tmp_path, "zen_digits", "value", rows)
+    assert assignment.physical_type is PhysicalType.STRING
+    assert values[0] == zen("1000")  # 그대로 보존
+    assert failures == {"value": 0}
+
+
+def test_nonexistent_timestamp_falls_back_to_string(tmp_path: Path) -> None:
+    # 리드 재현: 달력에 없는 타임스탬프('2025-02-30')는 TRY_CAST가 전부
+    # NULL로 만든다 — timestamp가 500/500 실패로 탈락하면 문자열로 내려간다.
+    rows = [f"2025-02-30 01:{i // 60 % 60:02d}:{i % 60:02d}" for i in range(500)]
+    assignment, values, failures = _run_s3(tmp_path, "no_feb30", "logged_at", rows)
+    assert assignment.physical_type is PhysicalType.STRING
+    assert all(value is not None for value in values)
+    assert failures == {"logged_at": 0}
+
+
+def test_timestamp_nanoseconds_are_failure_not_truncated(tmp_path: Path) -> None:
+    # 리드 재현: 소수초 7자리는 TIMESTAMP(마이크로초)에 조용히 잘렸다 —
+    # 6자리 이하 형태만 변환하고 넘으면 NULL + 실패로 둔다.
+    rows = [f"2025-01-01 10:00:{i % 60:02d}" for i in range(500)]
+    rows += ["2025-01-01 10:00:00.123456789"]
+    assignment, values, failures = _run_s3(tmp_path, "nano", "logged_at", rows)
+    assert assignment.physical_type is PhysicalType.TIMESTAMP
+    assert values[-1] is None  # 123456으로 잘리지 않는다
+    assert failures == {"logged_at": 1}
+
+
+def test_missed_text_minority_falls_back_to_string(tmp_path: Path) -> None:
+    # 리드 재현: 표본(10값, 시드 42)이 텍스트 2.5%를 놓치면 integer가 통과
+    # 후보로 올라가 전수 확인에서 탈락한다(실패 2.5% > 허용 2%) — 나머지
+    # 후보까지 내려가 문자열로 확정한다(실패 250값을 안은 정수가 안 된다).
+    rows = [str(i * 11 + 7) for i in range(9750)]
+    rows += ["가나다"] * 250
+    assignment, values, failures = _run_s3(tmp_path, "txt25", "value", rows, sample_limit=10)
+    assert assignment.physical_type is PhysicalType.STRING
+    assert values[0] == "7"  # 그대로 보존
+    assert failures == {"value": 0}

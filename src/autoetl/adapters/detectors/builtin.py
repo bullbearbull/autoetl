@@ -31,14 +31,16 @@ from autoetl.contracts import PhysicalType, SemanticType
 
 __all__ = ["BUILTIN_DETECTORS", "EXCEL_SERIAL_MAX", "EXCEL_SERIAL_MIN"]
 
-_UNSIGNED_INT = re.compile(r"^\d+$")
-_SIGNED_INT = re.compile(r"^[+-]?\d+$")
-_DECIMAL = re.compile(r"^[₩\s]*[+-]?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?[원]?[\s]*$")
-_FLOAT = re.compile(r"^[+-]?\d+(\.\d+)?[eE][+-]?\d+$")
-_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-_URL = re.compile(r"^https?://\S+$")
-_TIME = re.compile(r"^(\d{1,2}):(\d{2})(:(\d{2}))?$")
-_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?$")
+# re.ASCII: \d·\s를 ASCII로만 본다(재검토 4차 정리). 정규화의 DuckDB RE2도
+# ASCII만 받아 전각 숫자가 탐지기와 정규화에서 같게 취급된다.
+_UNSIGNED_INT = re.compile(r"^\d+$", re.ASCII)
+_SIGNED_INT = re.compile(r"^[+-]?\d+$", re.ASCII)
+_DECIMAL = re.compile(r"^[₩\s]*[+-]?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?[원]?[\s]*$", re.ASCII)
+_FLOAT = re.compile(r"^[+-]?\d+(\.\d+)?[eE][+-]?\d+$", re.ASCII)
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", re.ASCII)
+_URL = re.compile(r"^https?://\S+$", re.ASCII)
+_TIME = re.compile(r"^(\d{1,2}):(\d{2})(:(\d{2}))?$", re.ASCII)
+_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?$", re.ASCII)
 
 BOOLEAN_TOKENS = frozenset({"y", "n", "예", "아니오", "o", "x", "true", "false"})
 """불리언 유사 표기(소문자 기준). 1/0은 약한 근거라 넣지 않는다."""

@@ -150,9 +150,19 @@ def _normalize_expression(
         )
         inner = f"COALESCE({parsed}, {serial})"
     elif rule is NormalizationRule.TIMESTAMP:
-        inner = f"TRY_CAST({quoted} AS TIMESTAMP)"
+        # TIMESTAMP는 마이크로초(6자리)까지만 담는다 — 7자리 이상 소수초는
+        # 조용히 잘린다(무손실 위반, 재검토 4차). 6자리 이하 형태만 변환한다.
+        inner = (
+            f"CASE WHEN regexp_matches({quoted}, "
+            f"'^\\d{{4}}-\\d{{2}}-\\d{{2}}[ T]\\d{{2}}:\\d{{2}}(:\\d{{2}})?(\\.\\d{{1,6}})?$') "
+            f"THEN TRY_CAST({quoted} AS TIMESTAMP) ELSE NULL END"
+        )
     elif rule is NormalizationRule.TIME:
-        inner = f"TRY_CAST({quoted} AS TIME)"
+        inner = (
+            f"CASE WHEN regexp_matches({quoted}, "
+            f"'^\\d{{1,2}}:\\d{{2}}(:\\d{{2}})?(\\.\\d{{1,6}})?$') "
+            f"THEN TRY_CAST({quoted} AS TIME) ELSE NULL END"
+        )
     else:  # CODE_PAD — 폭은 전수 최대 길이라 잘리는 값이 없다.
         inner = (
             f"CASE WHEN regexp_matches({quoted}, '^\\d+$') "
@@ -299,8 +309,13 @@ def run(
             if (guess := detector.detect(sample)) is not None
         ]
         passing = [pair for pair in candidates if pair[1].confidence >= fit_threshold]
-        # 임계치를 넘은 후보가 없으면(커스텀 탐지기 목록 등) 최선의 후보로 확정한다.
-        ranked = _rank(passing if passing else candidates, column.name)
+        rest = [pair for pair in candidates if pair[1].confidence < fit_threshold]
+        # 확인 순서: 임계치를 넘은 후보(정렬 순) → 나머지 후보(정렬 순,
+        # free_text 폴백 포함). 통과 후보가 전수 확인에서 모두 탈락해도
+        # 무손실 폴백까지 내려가 확정한다(재검토 4차: 전각 숫자처럼 탐지기는
+        # 맞는데 정규화는 실패하는 값이 100%면, 그걸 안은 채 전부 NULL인
+        # 타입으로 확정되지 않는다).
+        ranked = _rank(passing, column.name) + _rank(rest, column.name)
         if not ranked:
             # 어떤 탐지기도 후보를 내지 않은 경우(빈 커스텀 목록) — 문자열로 둔다.
             assignments.append(
@@ -321,9 +336,9 @@ def run(
 
         # 전수 확인(재검토 지적): 표본은 무작위라도 전부를 보지 않으면 뒤늦게
         # 나오는 이형 값을 놓친다. 최상위 후보의 전수 실패 비율(값이 있는데
-        # 정규화 결과가 NULL)이 1 - 임계치를 넘으면 다음 후보로 내려가 같은
-        # 확인을 한다. 어느 후보도 못 넘으면 전수 실패가 가장 적은 후보로
-        # 확정한다.
+        # 정규화 결과가 NULL)이 1 - 임계치를 넘으면 다음 후보로 내려가(통과
+        # 후보 → 나머지 순서) 같은 확인을 한다. 어느 후보도 못 넘으면 전수
+        # 실패가 가장 적은 후보로 확정한다.
         nonmissing = profile_by_name[column.name].count
         confirmation: list[tuple[int, int, Detector, TypeGuess, str, int | None, int | None]] = []
         adopted = False
@@ -345,20 +360,29 @@ def run(
             # 첫 후보를 다시 고르면 하향이 실제로 작동하지 않는다.
             chosen = confirmation[-1]
         else:
+            # 모든 후보(통과 + 나머지)가 탈락한 경우다 — 폴백(IDENTITY) 후보가
+            # 없는 커스텀 목록에서만 생긴다. 전수 실패가 가장 적은 후보로 확정한다.
             confirmation.sort(key=lambda item: (item[0], item[1], item[2].name))
             chosen = confirmation[0]
         failure_count, _, top_detector, top, inner, precision, scale = chosen
 
         notes: list[str] = []
         others = [pair for pair in ranked if pair[0] is not top_detector]
-        if others:
+        # 격차 비교는 확정 후보와 같은 그룹(임계치 안/밖) 안에서만 한다 —
+        # 통과 후보가 폴백 하향되면 임계치 미달 후보와 비교해 매번 '격차
+        # 미달' 노트가 붙는다.
+        group = passing if any(pair[0] is top_detector for pair in passing) else rest
+        contenders = [pair for pair in group if pair[0] is not top_detector]
+        if contenders:
             chosen_score = top.confidence + _hint_bonus(top_detector, column.name)
-            second_score = others[0][1].confidence + _hint_bonus(others[0][0], column.name)
+            second_score = contenders[0][1].confidence + _hint_bonus(contenders[0][0], column.name)
             if chosen_score - second_score < ambiguous_gap:
                 notes.append(AMBIGUOUS_NOTE)
+        # 대안은 확정 후보를 뺀 상위 2개다(재검토 4차 정리) — 하향이 일어나면
+        # ranked[1:3]에 확정 후보 자신이 들어가고 탈락한 첫 후보가 빠졌다.
         alternatives = [
             TypeAlternative(semantic_type=guess.semantic_type, confidence=guess.confidence)
-            for _, guess in ranked[1:3]
+            for _, guess in others[:2]
         ]
         if failure_count:
             notes.append(f"정규화 실패 {failure_count}값")
