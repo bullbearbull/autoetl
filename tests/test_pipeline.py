@@ -23,10 +23,18 @@ def bench_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return out
 
 
-# ── T-0021 리팩터링 전후 산출물 일치(골든 대조) ────────────────────────────────
+# ── 골든 산출물 대조(단계 과업이 산출물을 바꾸면 골든을 함께 갱신) ───────────
 
 GOLDEN_DIR = Path(__file__).parent / "golden" / "p1_engine_skeleton"
-GOLDEN_VARIANTS = ("clean", "missing", "format_mix", "leading_zero", "multi_header")
+GOLDEN_VARIANTS = (
+    "clean",
+    "missing",
+    "format_mix",
+    "leading_zero",
+    "multi_header",
+    "cp949",
+    "hard",
+)
 
 
 @pytest.fixture(scope="module")
@@ -44,9 +52,10 @@ def golden_bench_dirs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Pat
 def test_report_matches_golden(
     pack_name: str, variant: str, golden_bench_dirs: dict[str, Path]
 ) -> None:
-    # 골든은 엔진 골격 분리 전(단일 pipeline.py) 코드가 시드 42 데이터셋에서 뽑은
-    # Report다. 리팩터링은 산출물을 바꾸지 않아야 한다 — 생성 시각만 제외하고
-    # 전체 JSON이 같아야 한다(T-0021 완료 기준).
+    # 골든은 직전 단계까지의 main 코드가 시드 42 데이터셋에서 뽑은 Report다.
+    # 산출물을 바꾸는 단계 과업(T-0023: multi_header 행 수 901→900, cp949·hard
+    # 읽기 성공)은 골든을 함께 갱신한다(core/README.md 규칙) — 생성 시각만
+    # 제외하고 전체 JSON이 같아야 한다.
     result = run_pipeline(golden_bench_dirs[pack_name] / f"{variant}.csv")
     payload = json.loads(result.report.model_dump_json())
     payload.pop("generated_at")
@@ -149,9 +158,13 @@ def test_cli_rejects_missing_file(tmp_path: Path) -> None:
     assert cli_main(["analyze", str(tmp_path / "none.csv"), "--no-llm"]) == 2
 
 
-def test_cli_fails_cleanly_on_cp949(bench_dir: Path) -> None:
-    # v0은 UTF-8만: CP949 입력은 안내 문구와 함께 종료 코드 1로 깔끔히 실패한다.
-    assert cli_main(["analyze", str(bench_dir / "cp949.csv"), "--no-llm"]) == 1
+def test_cli_analyzes_cp949_input(bench_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # T-0023: 인코딩을 감지해 CP949 입력도 분석한다(더는 종료 1이 아니다).
+    code = cli_main(["analyze", str(bench_dir / "cp949.csv"), "--no-llm"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert Report.model_validate(payload)
+    assert payload["reproduction"]["rows"] == "900"
 
 
 def test_pipeline_rejects_empty_csv(tmp_path: Path) -> None:

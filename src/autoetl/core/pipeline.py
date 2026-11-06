@@ -2,8 +2,8 @@
 
 각 단계의 실제 구현은 core/stages/ 아래 단계 모듈이고(규약은 core/README.md),
 이 파일은 AnalysisContext 생성과 순서 호출·결과 조립만 한다. v0 범위: 입력은
-UTF-8 CSV 1개, LLM 없음(--no-llm)만 지원. 실제 결정론 구현은 P1이, LLM 단계는
-P2가 맡는다.
+CSV 1개(인코딩·구분자·헤더 행은 S0가 감지), LLM 없음(--no-llm)만 지원.
+실제 결정론 구현은 P1이, LLM 단계는 P2가 맡는다.
 """
 
 from __future__ import annotations
@@ -80,8 +80,9 @@ def run_pipeline(
     purpose: Purpose = Purpose.ANALYTICS,
 ) -> PipelineResult:
     """S0~S14를 실행한다. LLM은 쓰지 않는다(--no-llm 전용)."""
-    with AnalysisContext(input_path) as ctx:
-        ingest = s00_ingest.run(ctx)
+    spec = s00_ingest.probe_source(input_path)
+    with AnalysisContext(input_path, spec=spec) as ctx:
+        ingest = s00_ingest.run(ctx, spec)
         ctx.stage_artifacts["s00_ingest"] = ingest
         sampling = s01_sampling.run(ctx)
         ctx.stage_artifacts["s01_sampling"] = sampling
