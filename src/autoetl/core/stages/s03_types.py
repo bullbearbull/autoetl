@@ -64,6 +64,13 @@ AMBIGUOUS_NOTE = (
     "상위 두 후보의 격차가 임계치 미달이라 LLM 확인 대상이다(--no-llm에서는 최상위 후보로 확정했다)"
 )
 
+CURRENCY_DECIMAL_SHAPE = "^[₩\\s]*[+-]?(\\d{1,3}(,\\d{3})+|\\d+)(\\.\\d+)?[원]?[\\s]*$"
+"""탐지기(builtin._DECIMAL)와 같은 통화·콤마 허용 형태(위치 포함).
+
+정규화·전수 산정이 이 기준을 공유한다(재검토 3차). 기호를 위치와 상관없이
+지우면 '1,5'→15, '12원34'→1234처럼 값이 조용히 바뀐다.
+"""
+
 
 def _sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
@@ -78,11 +85,12 @@ def _missing_predicate(column_id: str, markers: frozenset[str] | set[str]) -> st
 
 
 def _decimal_cast_expression(quoted: str, scale: int) -> str:
-    """통화·콤마를 뺀 뒤 decimal로 옮긴다. 반올림이 없어야 한다.
+    """탐지기와 같은 통화 형태를 통과한 값만 decimal로 옮긴다.
 
-    scale은 전수 최대 소수 자릿수다(재검토 2차). 정수부는 38-scale자리까지만
-    허용해 초과값은 NULL(실패)로 둔다 — DECIMAL(38, s) 캐스팅은 s를 넘는
-    소수부를 반올림하므로 형태 검사로 먼저 거른다.
+    기호 제거는 형태 검사를 통과한 값에만 적용한다(재검토 3차). scale은
+    전수 최대 소수 자릿수다(재검토 2차). 정수부는 38-scale자리까지만 허용해
+    초과값은 NULL(실패)로 둔다 — DECIMAL(38, s) 캐스팅은 s를 넘는 소수부를
+    반올림하므로 형태 검사로 먼저 거른다.
     """
     cleaned = f"regexp_replace({quoted}, '[₩원,\\s]', '', 'g')"
     if scale <= 0:
@@ -90,7 +98,8 @@ def _decimal_cast_expression(quoted: str, scale: int) -> str:
     else:
         shape = f"'^[+-]?\\d{{1,{38 - scale}}}(\\.\\d{{1,{scale}}})?$'"
     return (
-        f"CASE WHEN regexp_matches({cleaned}, {shape}) "
+        f"CASE WHEN regexp_matches({quoted}, '{CURRENCY_DECIMAL_SHAPE}') "
+        f"AND regexp_matches({cleaned}, {shape}) "
         f"THEN TRY_CAST({cleaned} AS DECIMAL(38, {scale})) ELSE NULL END"
     )
 
@@ -180,13 +189,16 @@ def _sample_values(
 
 
 def _full_decimal_shape(ctx: AnalysisContext, predicate: str, column_id: str) -> tuple[int, int]:
-    """전수 최대 (정수부 유효 자릿수, 소수부 자릿수) — 통화·콤마를 뺀 값 기준.
+    """전수 최대 (정수부 유효 자릿수, 소수부 자릿수) — 통화 형태를 통과한 값 기준.
 
     표본이 무작위라 표본 최댓값이 실제보다 작을 수 있다(재검토 2차). 이 값이
     TypeAssignment의 precision·scale과 정규화 캐스팅 scale에 그대로 쓰인다.
+    형태는 정규화와 같은 CURRENCY_DECIMAL_SHAPE다(재검토 3차) — '12원34' 같은
+    값은 기호를 떼도 12·34 자릿수 산정에 넣지 않는다.
     """
     quoted = quote_identifier(column_id)
     cleaned = f"regexp_replace({quoted}, '[₩원,\\s]', '', 'g')"
+    currency = f"regexp_matches({quoted}, '{CURRENCY_DECIMAL_SHAPE}')"
     decimal_shape = f"regexp_matches({cleaned}, '^[+-]?\\d+(\\.\\d+)?$')"
     significant = "ltrim(ltrim(split_part(c, '.', 1), '+-'), '0')"
     row = ctx.connection.execute(
@@ -194,7 +206,7 @@ def _full_decimal_shape(ctx: AnalysisContext, predicate: str, column_id: str) ->
         f"ELSE length({significant}) END), "
         f"max(length(split_part(c, '.', 2))) FROM "
         f"(SELECT {cleaned} AS c FROM {RAW_TABLE} "
-        f"WHERE NOT ({predicate}) AND {decimal_shape})"
+        f"WHERE NOT ({predicate}) AND {currency} AND {decimal_shape})"
     ).fetchone()
     if row is None or row[0] is None:
         return 1, 0
@@ -219,7 +231,9 @@ def _rule_parameters(
     """확정 후보의 (정규화 식, precision, scale). 전수 최댓값을 반영한다."""
     if guess.normalization is NormalizationRule.DECIMAL:
         int_digits, frac_digits = _full_decimal_shape(ctx, predicate, column_id)
-        scale = min(frac_digits, 38)
+        # scale 38이면 정수부 허용 폭(38-scale)이 0이 돼 형태 정규식이
+        # 무효하다({1,0}). 상한 37로 두고 넘는 소수부는 NULL(실패)로 둔다.
+        scale = min(frac_digits, 37)
         precision = min(int_digits + scale, 38)
         return (
             _normalize_expression(column_id, guess.normalization, 0, scale),
@@ -312,6 +326,7 @@ def run(
         # 확정한다.
         nonmissing = profile_by_name[column.name].count
         confirmation: list[tuple[int, int, Detector, TypeGuess, str, int | None, int | None]] = []
+        adopted = False
         for detector, guess in ranked:
             # 정밀도·자릿수·폭은 전수 최댓값으로 정한다(재검토 2차).
             inner, precision, scale = _rule_parameters(ctx, predicate, column_id, guess)
@@ -323,10 +338,16 @@ def run(
                 (full_failures, -detector.priority, detector, guess, inner, precision, scale)
             )
             if nonmissing == 0 or full_failures <= (1 - fit_threshold) * nonmissing:
+                adopted = True
                 break
+        if adopted:
+            # 통과한 후보(마지막에 시도한 것)로 확정한다(재검토 3차). 탈락한
+            # 첫 후보를 다시 고르면 하향이 실제로 작동하지 않는다.
+            chosen = confirmation[-1]
         else:
             confirmation.sort(key=lambda item: (item[0], item[1], item[2].name))
-        failure_count, _, top_detector, top, inner, precision, scale = confirmation[0]
+            chosen = confirmation[0]
+        failure_count, _, top_detector, top, inner, precision, scale = chosen
 
         notes: list[str] = []
         others = [pair for pair in ranked if pair[0] is not top_detector]

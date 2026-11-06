@@ -246,7 +246,7 @@ def test_missing_markers_normalize_to_null(tmp_path: Path) -> None:
 
 
 def _run_s3(
-    tmp_path: Path, name: str, header: str, rows: list[str]
+    tmp_path: Path, name: str, header: str, rows: list[str], *, sample_limit: int = 1000
 ) -> tuple[TypeAssignment, list[object], dict[str, int]]:
     """S0~S3만 돌려 (판정, 정규화 값, 실패 수)를 돌려준다."""
     path = tmp_path / f"{name}.csv"
@@ -255,7 +255,7 @@ def _run_s3(
     with AnalysisContext(path, spec=spec) as ctx:
         ingest = s00_ingest.run(ctx, spec)
         profiles = s02_profile.run(ctx, ingest, s01_sampling.run(ctx))
-        types = s03_types.run(ctx, ingest, profiles)
+        types = s03_types.run(ctx, ingest, profiles, sample_limit=sample_limit)
         values = ctx.connection.execute(f'SELECT "c0" FROM {ctx.normalized_view}').fetchall()
         failures = cast("dict[str, int]", ctx.stage_artifacts[FAILURES_KEY])
     return types[0], [row[0] for row in values], failures
@@ -370,3 +370,47 @@ def test_single_text_date_does_not_open_serial_gate(tmp_path: Path) -> None:
     rows = [str(20000 + (i * 137) % 40000) for i in range(900)] + ["20240101"]
     assignment, _, _ = _run_s3(tmp_path, "gate1", "value", rows)
     assert assignment.physical_type is PhysicalType.INTEGER
+
+
+# ── 리드 재검토(3차) 반영 — 하향 확정·통화 형태 게이트·scale 상한 ────────────
+
+
+def test_full_scan_fallback_adopts_passing_candidate(tmp_path: Path) -> None:
+    # 리드 재현: 정수 96% + 소수 4%인데 표본(20값, 시드 42)이 전부 정수다.
+    # integer는 전수 확인에서 탈락(실패 800 > 허용 400)하고 decimal이 실패
+    # 0으로 통과한다 — 통과한 decimal을 확정한다. 결함이 있으면 탈락한
+    # integer(confirmation[0])를 다시 골라 '정규화 실패 800값'이 붙었다.
+    rows = [str(i * 7 + 3) for i in range(19200)]
+    rows += [f"{i}.5" for i in range(800)]
+    assignment, values, failures = _run_s3(tmp_path, "fallback", "value", rows, sample_limit=20)
+    assert assignment.physical_type is PhysicalType.DECIMAL
+    assert assignment.detector == "builtin.decimal"
+    assert failures == {"value": 0}
+    assert all(value is not None for value in values)  # 소수 800개까지 전부 변환
+
+
+def test_decimal_normalization_rejects_misplaced_symbols(tmp_path: Path) -> None:
+    # 리드 재현: 소수점 쉼표 '1,5'(→15가 아니다)와 중간 통화 '12원34'
+    # (→1234가 아니다)는 기호를 위치와 상관없이 지우면 값이 조용히 바뀐다.
+    # 탐지기와 같은 통화 형태를 통과한 값만 변환하고 나머지는 NULL+실패.
+    rows = [f"{i}.5" for i in range(200)]
+    rows += ['"1,5"', '"12원34"', '"1,234,567원"', '"₩1,234"']  # 콤마는 CSV 인용
+    assignment, values, failures = _run_s3(tmp_path, "won_mid", "amount", rows)
+    assert assignment.physical_type is PhysicalType.DECIMAL
+    assert values[200] is None  # '1,5' → 15 아님
+    assert values[201] is None  # '12원34' → 1234 아님
+    assert values[202] == decimal.Decimal("1234567")
+    assert values[203] == decimal.Decimal("1234")
+    assert failures == {"amount": 2}
+
+
+def test_scale_38_column_does_not_crash(tmp_path: Path) -> None:
+    # 리드 재현: 소수부 38자리 값이면 형태 정규식이 {1,0}이 돼 InvalidInput
+    # 예외로 멈췄다. scale 상한 37로 두고 넘는 소수부는 NULL(실패)로 센다.
+    # (정수부는 폭 38-37=1자리까지만 허용한다 — 그래서 1자리 값으로 맞춘다.)
+    rows = [f"{i}.5" for i in range(10)] * 5 + ["0." + "1" * 38]
+    assignment, values, failures = _run_s3(tmp_path, "scale38", "value", rows)
+    assert assignment.physical_type is PhysicalType.DECIMAL
+    assert assignment.scale == 37  # 38이 아니라 상한 37
+    assert values[-1] is None  # 반올림·절단 없이 실패
+    assert failures == {"value": 1}
