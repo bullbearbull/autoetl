@@ -140,9 +140,13 @@ def _cell_kind(value: str) -> str:
 
 
 def _write_utf8_temp(text: str) -> Path:
-    """변환된 UTF-8 임시 파일. 실패해도 남지 않게 probe가 관리한다."""
+    """변환된 UTF-8 임시 파일. 실패해도 남지 않게 probe가 관리한다.
+
+    newline=""로 써서 줄바꿈을 그대로 둔다 — Windows 텍스트 모드 기본값은
+    '\\n'을 '\\r\\n'으로 바꿔 원본의 '\\r\\n'이 '\\r\\r\\n'이 되고 적재가 깨진다.
+    """
     handle = tempfile.NamedTemporaryFile(  # noqa: SIM115 - 경로를 넘겨야 해서 직접 닫는다
-        "w", encoding="utf-8", suffix=".autoetl-utf8.csv", delete=False
+        "w", encoding="utf-8", newline="", suffix=".autoetl-utf8.csv", delete=False
     )
     try:
         handle.write(text)
