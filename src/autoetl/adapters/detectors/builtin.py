@@ -155,10 +155,16 @@ def _detect_date(sample: ColumnSample) -> TypeGuess | None:
     - 같은 컬럼에 문자열 날짜 형식 값이 하나라도 있다(형식 혼재).
     - 컬럼 이름이 날짜형 힌트다(date·dt·일자·날짜·일시).
     """
-    text_fit = _fit(sample.values, _is_date_text)
+    text_dates = [value for value in sample.values if _is_date_text(value)]
     serial_fit = _fit(sample.values, _is_excel_serial)
-    serial_is_evidence = text_fit > 0.0 or hint_matches(sample.column, "date")
-    fit = text_fit + (serial_fit if serial_is_evidence else 0.0)
+    # 문자열 날짜가 '하나만' 있으면 게이트가 열리지 않는다(재검토 2차: 이름 힌트
+    # 없는 2만~6만 정수에 yyyyMMdd 값 하나가 섞이면 가격이 통째로 날짜가 됐다).
+    # 코드 패딩 근거와 같은 하한 — 2개 이상 + 표본의 1% 이상.
+    text_gate = len(text_dates) >= 2 and len(text_dates) >= 0.01 * len(sample.values)
+    serial_is_evidence = text_gate or hint_matches(sample.column, "date")
+    fit = (len(text_dates) / len(sample.values) if sample.values else 0.0) + (
+        serial_fit if serial_is_evidence else 0.0
+    )
     if fit <= 0.0:
         return None
     return TypeGuess(

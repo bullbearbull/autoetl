@@ -77,8 +77,35 @@ def _missing_predicate(column_id: str, markers: frozenset[str] | set[str]) -> st
     return " OR ".join(f"({clause})" for clause in clauses)
 
 
-def _normalize_expression(column_id: str, rule: NormalizationRule, pad_width: int) -> str:
-    """규칙별 값 변환 SQL(결측 → NULL 포장은 run에서 한다)."""
+def _decimal_cast_expression(quoted: str, scale: int) -> str:
+    """통화·콤마를 뺀 뒤 decimal로 옮긴다. 반올림이 없어야 한다.
+
+    scale은 전수 최대 소수 자릿수다(재검토 2차). 정수부는 38-scale자리까지만
+    허용해 초과값은 NULL(실패)로 둔다 — DECIMAL(38, s) 캐스팅은 s를 넘는
+    소수부를 반올림하므로 형태 검사로 먼저 거른다.
+    """
+    cleaned = f"regexp_replace({quoted}, '[₩원,\\s]', '', 'g')"
+    if scale <= 0:
+        shape = "'^[+-]?\\d{1,38}$'"
+    else:
+        shape = f"'^[+-]?\\d{{1,{38 - scale}}}(\\.\\d{{1,{scale}}})?$'"
+    return (
+        f"CASE WHEN regexp_matches({cleaned}, {shape}) "
+        f"THEN TRY_CAST({cleaned} AS DECIMAL(38, {scale})) ELSE NULL END"
+    )
+
+
+def _normalize_expression(
+    column_id: str,
+    rule: NormalizationRule,
+    pad_width: int,
+    decimal_scale: int = 10,
+) -> str:
+    """규칙별 값 변환 SQL(결측 → NULL 포장은 run에서 한다).
+
+    무손실 원칙: 값을 그대로 옮기거나 NULL(실패)로 둔다. 반올림·절단·임의
+    보정은 하지 않는다(재검토 2차). pad_width·decimal_scale은 전수 최댓값이다.
+    """
     quoted = quote_identifier(column_id)
     if rule is NormalizationRule.IDENTITY:
         inner = quoted
@@ -91,8 +118,7 @@ def _normalize_expression(column_id: str, rule: NormalizationRule, pad_width: in
             f"THEN TRY_CAST({quoted} AS BIGINT) ELSE NULL END"
         )
     elif rule is NormalizationRule.DECIMAL:
-        cleaned = f"regexp_replace({quoted}, '[₩원,\\s]', '', 'g')"
-        inner = f"TRY_CAST({cleaned} AS DECIMAL(38, 10))"
+        inner = _decimal_cast_expression(quoted, decimal_scale)
     elif rule is NormalizationRule.FLOAT:
         inner = f"TRY_CAST({quoted} AS DOUBLE)"
     elif rule is NormalizationRule.BOOLEAN:
@@ -106,8 +132,10 @@ def _normalize_expression(column_id: str, rule: NormalizationRule, pad_width: in
             f"CAST(TRY_STRPTIME({quoted}, '{fmt}') AS DATE)"
             for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y%m%d")
         )
+        # 시리얼 분기도 정수 형태일 때만 — TRY_CAST INTEGER는 소수를 반올림한다.
         serial = (
-            f"CASE WHEN TRY_CAST({quoted} AS INTEGER) BETWEEN {EXCEL_SERIAL_MIN} "
+            f"CASE WHEN regexp_matches({quoted}, '^\\s*\\d+\\s*$') "
+            f"AND TRY_CAST({quoted} AS INTEGER) BETWEEN {EXCEL_SERIAL_MIN} "
             f"AND {EXCEL_SERIAL_MAX} THEN DATE '1899-12-30' + "
             f"TRY_CAST({quoted} AS INTEGER) ELSE NULL END"
         )
@@ -116,7 +144,7 @@ def _normalize_expression(column_id: str, rule: NormalizationRule, pad_width: in
         inner = f"TRY_CAST({quoted} AS TIMESTAMP)"
     elif rule is NormalizationRule.TIME:
         inner = f"TRY_CAST({quoted} AS TIME)"
-    else:  # CODE_PAD
+    else:  # CODE_PAD — 폭은 전수 최대 길이라 잘리는 값이 없다.
         inner = (
             f"CASE WHEN regexp_matches({quoted}, '^\\d+$') "
             f"THEN LPAD({quoted}, {pad_width}, '0') ELSE {quoted} END"
@@ -149,6 +177,63 @@ def _sample_values(
         f"WHERE NOT ({predicate})) USING SAMPLE {limit} ROWS (reservoir, {seed})"
     ).fetchall()
     return tuple(row[0] for row in rows if isinstance(row[0], str))
+
+
+def _full_decimal_shape(ctx: AnalysisContext, predicate: str, column_id: str) -> tuple[int, int]:
+    """전수 최대 (정수부 유효 자릿수, 소수부 자릿수) — 통화·콤마를 뺀 값 기준.
+
+    표본이 무작위라 표본 최댓값이 실제보다 작을 수 있다(재검토 2차). 이 값이
+    TypeAssignment의 precision·scale과 정규화 캐스팅 scale에 그대로 쓰인다.
+    """
+    quoted = quote_identifier(column_id)
+    cleaned = f"regexp_replace({quoted}, '[₩원,\\s]', '', 'g')"
+    decimal_shape = f"regexp_matches({cleaned}, '^[+-]?\\d+(\\.\\d+)?$')"
+    significant = "ltrim(ltrim(split_part(c, '.', 1), '+-'), '0')"
+    row = ctx.connection.execute(
+        f"SELECT max(CASE WHEN length({significant}) = 0 THEN 1 "
+        f"ELSE length({significant}) END), "
+        f"max(length(split_part(c, '.', 2))) FROM "
+        f"(SELECT {cleaned} AS c FROM {RAW_TABLE} "
+        f"WHERE NOT ({predicate}) AND {decimal_shape})"
+    ).fetchone()
+    if row is None or row[0] is None:
+        return 1, 0
+    return int(row[0]), int(row[1] or 0)
+
+
+def _full_digit_width(ctx: AnalysisContext, predicate: str, column_id: str) -> int:
+    """숫자 코드의 전수 최대 길이 — 폭보다 긴 값이 없어 LPAD가 자르지 않는다."""
+    quoted = quote_identifier(column_id)
+    row = ctx.connection.execute(
+        f"SELECT max(length({quoted})) FROM {RAW_TABLE} "
+        f"WHERE NOT ({predicate}) AND regexp_matches({quoted}, '^\\d+$')"
+    ).fetchone()
+    if row is None or row[0] is None:
+        return 1
+    return max(int(row[0]), 1)
+
+
+def _rule_parameters(
+    ctx: AnalysisContext, predicate: str, column_id: str, guess: TypeGuess
+) -> tuple[str, int | None, int | None]:
+    """확정 후보의 (정규화 식, precision, scale). 전수 최댓값을 반영한다."""
+    if guess.normalization is NormalizationRule.DECIMAL:
+        int_digits, frac_digits = _full_decimal_shape(ctx, predicate, column_id)
+        scale = min(frac_digits, 38)
+        precision = min(int_digits + scale, 38)
+        return (
+            _normalize_expression(column_id, guess.normalization, 0, scale),
+            precision,
+            scale,
+        )
+    if guess.normalization is NormalizationRule.CODE_PAD:
+        width = _full_digit_width(ctx, predicate, column_id)
+        return _normalize_expression(column_id, guess.normalization, width), None, None
+    return (
+        _normalize_expression(column_id, guess.normalization, guess.pad_width),
+        guess.precision,
+        guess.scale,
+    )
 
 
 def _rank(
@@ -226,19 +311,22 @@ def run(
         # 확인을 한다. 어느 후보도 못 넘으면 전수 실패가 가장 적은 후보로
         # 확정한다.
         nonmissing = profile_by_name[column.name].count
-        confirmation: list[tuple[int, int, Detector, TypeGuess, str]] = []
+        confirmation: list[tuple[int, int, Detector, TypeGuess, str, int | None, int | None]] = []
         for detector, guess in ranked:
-            inner = _normalize_expression(column_id, guess.normalization, guess.pad_width)
+            # 정밀도·자릿수·폭은 전수 최댓값으로 정한다(재검토 2차).
+            inner, precision, scale = _rule_parameters(ctx, predicate, column_id, guess)
             row = ctx.connection.execute(
                 f"SELECT COUNT(*) FROM {RAW_TABLE} WHERE NOT ({predicate}) AND ({inner}) IS NULL"
             ).fetchone()
             full_failures = int(row[0]) if row is not None else 0
-            confirmation.append((full_failures, -detector.priority, detector, guess, inner))
+            confirmation.append(
+                (full_failures, -detector.priority, detector, guess, inner, precision, scale)
+            )
             if nonmissing == 0 or full_failures <= (1 - fit_threshold) * nonmissing:
                 break
         else:
             confirmation.sort(key=lambda item: (item[0], item[1], item[2].name))
-        failure_count, _, top_detector, top, inner = confirmation[0]
+        failure_count, _, top_detector, top, inner, precision, scale = confirmation[0]
 
         notes: list[str] = []
         others = [pair for pair in ranked if pair[0] is not top_detector]
@@ -259,8 +347,8 @@ def run(
                 column=column.name,
                 physical_type=top.physical_type,
                 semantic_type=top.semantic_type,
-                precision=top.precision,
-                scale=top.scale,
+                precision=precision,
+                scale=scale,
                 detector=top_detector.name,
                 confidence=top.confidence,
                 alternatives=alternatives,

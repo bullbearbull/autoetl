@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import decimal
 from datetime import date
 from pathlib import Path
 from typing import cast
@@ -314,3 +315,58 @@ def test_single_padded_value_keeps_column_integer(tmp_path: Path) -> None:
     assignment, values, _ = _run_s3(tmp_path, "one_pad", "num", rows)
     assert assignment.physical_type is PhysicalType.INTEGER
     assert values[500] == 7  # 정수로 읽는다(패딩 복원 없음)
+
+
+# ── 리드 재검토(2차) 반영 — 무손실 원칙·전수 정밀도·날짜 게이트 하한 ─────────
+
+
+def test_code_pad_never_truncates(tmp_path: Path) -> None:
+    # 리드 재현: 5자리 코드에 7자리 코드가 섞이면 폭(전수 최대 길이)이 7이
+    # 되고, 긴 값이 잘리지 않는다(LPAD 절단 금지).
+    rows = [f"{i:05d}" for i in range(300)] + ["1234567"] * 3
+    assignment, values, failures = _run_s3(tmp_path, "code_pad", "code", rows)
+    assert assignment.physical_type is PhysicalType.STRING
+    assert values.count("1234567") == 3  # 잘리지 않고 그대로
+    assert "0000042" in values  # 짧은 값은 전수 폭(7)으로 채운다
+    assert failures == {"code": 0}
+
+
+def test_decimal_normalization_is_exact_at_full_scale(tmp_path: Path) -> None:
+    # 리드 재현: 소수부 12자리 값이 DECIMAL(38,10) 반올림으로 7.9E-9가 되던
+    # 것 — scale을 전수 최대(12)로 정해 정확히 보존한다.
+    rows = [f"{i}.25" for i in range(500)] + ["0.000000007919"]
+    assignment, values, failures = _run_s3(tmp_path, "deep_scale", "amount", rows)
+    assert assignment.physical_type is PhysicalType.DECIMAL
+    assert assignment.scale == 12
+    assert values[-1] == decimal.Decimal("0.000000007919")  # 반올림 아님
+    assert failures == {"amount": 0}
+
+
+def test_precision_comes_from_full_scan_not_sample(tmp_path: Path) -> None:
+    # 리드 재현: 2,000행(정수.소수2자리)에 큰 값(precision 20·scale 6)이
+    # 표본 밖에 있어도 전수 최댓값으로 보고한다. 정규화 값도 원래 값과 같다.
+    rows = [f"{i}.25" for i in range(2000)] + ["12345678901234.123456"] * 3
+    assignment, values, failures = _run_s3(tmp_path, "full_prec", "amount", rows)
+    assert assignment.physical_type is PhysicalType.DECIMAL
+    assert assignment.precision is not None and assignment.precision >= 20
+    assert assignment.scale == 6
+    assert values[-1] == decimal.Decimal("12345678901234.123456")
+    assert failures == {"amount": 0}
+
+
+def test_fractional_serial_is_failure_not_rounded_date(tmp_path: Path) -> None:
+    # 리드 재현: 문자열 날짜+시리얼 혼재 컬럼의 '45000.5' — 시리얼 분기가
+    # 정수 형태일 때만 탄다(반올림된 2023-03-16이 나오지 않는다).
+    rows = ["2025-01-05", "2025-02-10"] + ["45824"] * 297 + ["45000.5"]
+    assignment, values, failures = _run_s3(tmp_path, "frac_serial", "order_date", rows)
+    assert assignment.physical_type is PhysicalType.DATE
+    assert values[-1] is None
+    assert failures == {"order_date": 1}
+
+
+def test_single_text_date_does_not_open_serial_gate(tmp_path: Path) -> None:
+    # 리드 재현: 이름 힌트 없는 2만~6만 정수 900행에 yyyyMMdd 값 하나 —
+    # 게이트(문자열 날짜 2개 이상 + 1% 이상)가 열리지 않아 integer다.
+    rows = [str(20000 + (i * 137) % 40000) for i in range(900)] + ["20240101"]
+    assignment, _, _ = _run_s3(tmp_path, "gate1", "value", rows)
+    assert assignment.physical_type is PhysicalType.INTEGER

@@ -123,11 +123,18 @@ def test_serial_only_column_needs_hint_or_mixed_formats() -> None:
     # 날짜형 이름 힌트가 있으면 시리얼만으로도 날짜다.
     guess = _detect_date(_date_sample("order_date", serials))
     assert guess is not None and guess.physical_type is PhysicalType.DATE
-    # 다른 날짜 형식이 하나라도 섞여 있으면(형식 혼재) 힌트 없이도 시리얼이 근거가 된다.
-    mixed = ("2025-06-16", *serials)
+    # 문자열 날짜가 2개 이상 + 1% 이상 섞여 있으면(형식 혼재) 힌트 없이도
+    # 시리얼이 근거가 된다(재검토 2차: 값 하나로는 게이트가 안 열린다).
+    mixed = ("2025-06-16", "2024-03-01", *serials)
     guess = _detect_date(_date_sample("value", mixed))
     assert guess is not None
     assert guess.confidence == 1.0
+
+    # 문자열 날짜가 하나뿐이면 게이트가 열리지 않는다 — 시리얼은 적합률에
+    # 못 들어가 저신뢰(문자열 날짜만큼)로 돌아간다.
+    single = ("2025-06-16", *[str(v) for v in range(20001, 20091)])
+    single_guess = _detect_date(_date_sample("value", tuple(single)))
+    assert single_guess is None or single_guess.confidence < 0.98
 
 
 def _code_sample(column: str, values: tuple[str, ...]) -> ColumnSample:
