@@ -9,8 +9,9 @@
 - 데이터 생성 → 2팩x7변형 analyze --no-llm(프로세스 안에서 호출) → 점수표.
 - 실패한 변형은 0점으로 남기고 실패 단계·종료 코드를 기록한다. 원문 오류
   메시지는 남기지 않는다(정책 금지 패턴 1·6). 입력 오류(InputError·
-  UnicodeDecodeError)는 S0·종료 1, 그 밖의 내부 오류는 단계 미상·종료 3으로
-  분류한다(CLI 예외 체계와 같은 대응).
+  UnicodeDecodeError)는 S0·종료 1, 후보 고르기·변환·채점 구간의 오류는
+  '채점 변환'·종료 3, 그 밖의 내부 오류는 단계 미상·종료 3으로 분류한다(CLI
+  예외 체계와 같은 대응). 어떤 변형이 실패해도 실행기는 끝까지 돈다.
 - 실행기 산출물에는 시각·난수가 없다 — 같은 시드면 같은 표가 나온다.
 """
 
@@ -180,31 +181,52 @@ def _run_variant(
             failure_exit_code=3,
         )
 
-    third_nf = [
-        candidate
-        for candidate in result.candidates
-        if candidate.pattern is SchemaPattern.THIRD_NORMAL_FORM
-    ]
-    selected = next(
-        (
+    # 후보 고르기·변환·채점도 변형별 실패 처리 안에 넣는다(리드 검토 #105).
+    # 이 구간의 오류(예: FK 형식 위반 ValueError, 후보가 비어 IndexError)가
+    # 실행기 전체를 멈추게 하지 않는다 — 이 변형의 실패로 기록하고 넘어간다.
+    # 이 실행기는 T-0031(S9 후보 생성)이 FK를 처음 만들 때 쓰는 원인 추적
+    # 도구라 멈추면 안 된다.
+    try:
+        third_nf = [
             candidate
             for candidate in result.candidates
-            if candidate.id == result.selected.candidate_id
-        ),
-        result.candidates[0],
-    )
-    if third_nf:
-        target = third_nf[0]
-        label = f"3nf({target.id})"
-    else:
-        target = selected
-        label = f"선택 후보({target.id})"
-    metrics = _score_all(answer, to_prediction(target), variant)
-    selected_total = (
-        metrics["total"]
-        if target is selected
-        else _score_all(answer, to_prediction(selected), variant)["total"]
-    )
+            if candidate.pattern is SchemaPattern.THIRD_NORMAL_FORM
+        ]
+        selected = next(
+            (
+                candidate
+                for candidate in result.candidates
+                if candidate.id == result.selected.candidate_id
+            ),
+            None,
+        )
+        # 선택 후보 ID를 찾지 못하면 첫 후보로 대신하고 표에 그 사실을 표시한다.
+        selected_note = ""
+        if selected is None:
+            selected = result.candidates[0]
+            selected_note = f", 선택 {result.selected.candidate_id} 미발견"
+        if third_nf:
+            target = third_nf[0]
+            label = f"3nf({target.id}{selected_note})"
+        else:
+            target = selected
+            label = f"선택 후보({target.id}{selected_note})"
+        metrics = _score_all(answer, to_prediction(target), variant)
+        selected_total = (
+            metrics["total"]
+            if target is selected
+            else _score_all(answer, to_prediction(selected), variant)["total"]
+        )
+    except Exception:
+        return VariantResult(
+            pack=pack_name,
+            variant=variant,
+            candidate_label="실패",
+            metrics=None,
+            selected_total=None,
+            failure_stage="채점 변환",
+            failure_exit_code=3,
+        )
     return VariantResult(
         pack=pack_name,
         variant=variant,
