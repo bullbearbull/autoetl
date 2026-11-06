@@ -11,6 +11,8 @@ from bench.generator import PACKS, build_dataset, flat_layout, flatten, generate
 from bench.generator.noise import GROUP_LABELS, NULL_TOKENS, VARIANTS, apply_noise
 from bench.generator.packs import ColumnSpec, FlatColumn, Pack, TableSpec
 
+from autoetl.contracts.common import PhysicalType
+
 EXPECTED_COLUMNS = {"orders_kr": 19, "music": 13}
 """조인 키를 한 번만 내보낼 때의 평면 컬럼 수(catalog_no 추가 기준)."""
 
@@ -309,7 +311,7 @@ def test_no_variant_header_leaks_table_names(pack_name: str, tmp_path: Path) -> 
 def test_answer_maps_fk_to_parent_pk_column_id(tmp_path: Path) -> None:
     out = _dataset("orders_kr", tmp_path)
     answer = BenchAnswer.model_validate_json((out / "answer.json").read_text(encoding="utf-8"))
-    assert answer.answer_version == ANSWER_VERSION == "0.2.0"
+    assert answer.answer_version == ANSWER_VERSION == "0.3.0"
     orders = next(table for table in answer.tables if table.name == "orders")
     fk_column = next(column for column in orders.columns if column.is_foreign_key)
     assert fk_column.column_id == "customer_id", "FK의 컬럼 ID는 부모 PK의 컬럼 ID다"
@@ -321,6 +323,36 @@ def test_answer_maps_fk_to_parent_pk_column_id(tmp_path: Path) -> None:
     for table in answer.tables:
         assert table.functional_dependencies
         assert table.row_count == PACKS["orders_kr"].table(table.name).rows
+
+
+@pytest.mark.parametrize("pack_name", sorted(PACKS))
+def test_answer_key_columns_are_integer(pack_name: str, tmp_path: Path) -> None:
+    # 정수 대리 키(kind id·fk)의 정답 물리 타입은 integer다(T-0020). 앞자리 0을
+    # 보존하는 고정 자릿수 코드(kind code)는 문자열을 유지한다. kind는 평면
+    # 배치(flat_layout)가 아니라 팩 테이블 선언에서 온다 — 평면에서 조인 키는
+    # 부모 PK 위치에 한 번만 놓이므로 팩에 따라 kind fk가 배치에 안 남는다.
+    out = _dataset(pack_name, tmp_path)
+    answer = BenchAnswer.model_validate_json((out / "answer.json").read_text(encoding="utf-8"))
+    kinds = {
+        ((spec.ref or "").split(".")[1] if spec.kind == "fk" else spec.name): spec.kind
+        for table in PACKS[pack_name].tables
+        for spec in table.columns
+    }
+    pk_ids = {column for table in answer.tables for column in table.primary_key}
+    fk_ids = {
+        column for table in answer.tables for fk in table.foreign_keys for column in fk.columns
+    }
+    assert pk_ids and fk_ids, "두 팩 모두 PK·FK가 있어야 이 테스트가 의미 있다"
+    seen_kinds: set[str] = set()
+    for table in answer.tables:
+        for column in table.columns:
+            kind = kinds[column.column_id]
+            seen_kinds.add(kind)
+            if kind in ("id", "fk"):
+                assert column.physical_type is PhysicalType.INTEGER, column.column_id
+            if kind == "code":
+                assert column.physical_type is PhysicalType.STRING, column.column_id
+    assert {"id", "fk"} <= seen_kinds, "키 kind를 실제로 검사했는지 확인"
 
 
 def test_layout_type_annotations() -> None:

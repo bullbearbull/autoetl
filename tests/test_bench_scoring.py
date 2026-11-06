@@ -444,7 +444,7 @@ def test_answer_format_is_closed() -> None:
 
 
 def test_answer_version_bumped() -> None:
-    assert ANSWER_VERSION == "0.2.0"
+    assert ANSWER_VERSION == "0.3.0"
 
 
 # ── 기준선(README 문서↔코드 일치) ──────────────────────────────────────────
