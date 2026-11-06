@@ -8,9 +8,13 @@ AnalysisContext 하나가 파이프라인 실행 전체의 입력 상태를 뜻�
   적재한다. 원문은 바꾸지 않는다: 앞자리 0('007'), 지수 표기('1E5'),
   공백만 있는 값('  ')은 그대로 남고, 따옴표 없는 빈 칸은 NULL, 따옴표로
   감싼 빈 문자열("")은 ''로 구분해 남는다(allow_quoted_nulls=false).
-- 조회는 내부 식별자(c0, c1, …)를 쓴다. DuckDB가 중복 헤더를 a, a_1로
-  고쳐 쓰거나 특수문자를 포함해도 위치 기반 조회에 영향이 없게 뷰(raw_view)로
-  감싼다.
+- **파일에서 온 문자열은 SQL 문장에 넣지 않는다.** 적재할 때부터 컬럼 이름을
+  코드가 만든 내부 식별자(c0, c1, …)로 지정하고, 원래 헤더 이름은 Python
+  쪽(ContextColumn)에만 둔다. 조작된 헤더로 다른 SQL 문장을 실행시키거나
+  특수문자(큰따옴표 등) 때문에 적재가 깨지는 일이 없다.
+- 연결 기본값을 잠근다(심층 방어): 확장 자동 설치·자동 로드 끔, 원본 적재가
+  끝나면 외부 접근(파일 함수·ATTACH) 끔. 이후 단계 쿼리는 메모리 테이블만
+  볼 수 있다.
 - DuckDB 임시 폴더는 작업 임시 폴더 안에 두고 close()(예외로 끝나도) 지운다.
 
 이후 단계가 쓰는 자리: normalized_view(S3 타입 추론이 정규화 뷰 이름을
@@ -33,13 +37,20 @@ import duckdb
 from autoetl.core.errors import InputError
 
 RAW_TABLE = "raw"
-"""원본 테이블. 컬럼 이름은 DuckDB가 헤더에서 만든 그대로다(중복은 a_1로 고쳐 쓴다)."""
-
-RAW_VIEW = "raw_view"
-"""내부 식별자(c0, c1, …)로 조회하는 원본 뷰. 단계는 이 뷰를 쓴다."""
+"""원본 테이블. 컬럼 이름은 코드가 만든 내부 식별자(c0, c1, …)다."""
 
 INTERNAL_ID_OF_POSITION = "c{position}"
 """내부 식별자 형식. 위치가 곧 신원이다(헤더 문자열과 무관)."""
+
+
+def quote_identifier(identifier: str) -> str:
+    """SQL 식별자를 안전하게 큰따옴표로 감싼다(내부의 따옴표는 두 번).
+
+    단계 쿼리에서 식별자를 인용해야 할 때는 반드시 이 함수를 쓴다
+    (core/README.md 규약). 원본 헤더 문자열을 식별자로 쓰지 않는 규칙은
+    그대로다 — 내부 식별자(c0, …)나 단계가 만든 이름에만 쓴다.
+    """
+    return '"' + identifier.replace('"', '""') + '"'
 
 
 @dataclass(frozen=True)
@@ -106,7 +117,12 @@ class AnalysisContext:
         self.stage_artifacts: dict[str, object] = {}
 
         self._temp_dir = Path(tempfile.mkdtemp(prefix="autoetl-duckdb-"))
-        config: dict[str, Any] = {"temp_directory": str(self._temp_dir)}
+        config: dict[str, Any] = {
+            "temp_directory": str(self._temp_dir),
+            # P1 규칙: core는 네트워크·확장 없이 돈다. 확장 자동 설치·로드 잠금.
+            "autoinstall_known_extensions": False,
+            "autoload_known_extensions": False,
+        }
         if memory_limit is not None:
             config["memory_limit"] = memory_limit
         if threads is not None:
@@ -114,9 +130,17 @@ class AnalysisContext:
         try:
             self.connection = duckdb.connect(database=":memory:", config=config)
             try:
+                # 파일에서 온 문자열(헤더)은 SQL에 넣지 않는다. 컬럼 이름을 코드가
+                # 만든 내부 식별자(c0, c1, …)로 지정해 적재하고 원래 헤더 이름은
+                # ContextColumn(Python)에만 남는다. 식별자는 [c][0-9] 글자뿐이라
+                # 문장 조립이 안전하다.
+                columns_spec = ", ".join(
+                    f"'{column.column_id}': 'VARCHAR'" for column in self.columns
+                )
                 self.connection.execute(
                     f"CREATE TABLE {RAW_TABLE} AS SELECT * FROM read_csv(?, "
-                    "header=true, all_varchar=true, allow_quoted_nulls=false, delim=',')",
+                    f"header=true, columns={{{columns_spec}}}, "
+                    "allow_quoted_nulls=false, delim=',')",
                     [str(input_path)],
                 )
             except duckdb.Error as exc:
@@ -127,21 +151,9 @@ class AnalysisContext:
                     f"{type(exc).__name__} — 행마다 컬럼 수가 다르거나 읽을 수 "
                     "없는 형식이다."
                 ) from exc
-            duckdb_names = [
-                row[0] for row in self.connection.execute(f"DESCRIBE {RAW_TABLE}").fetchall()
-            ]
-            if len(duckdb_names) != len(self.columns):
-                raise InputError(
-                    f"입력 CSV의 컬럼 수가 헤더와 다르다({input_path}): "
-                    f"헤더 {len(self.columns)}개, 데이터 행 {len(duckdb_names)}개."
-                )
-            select_list = ", ".join(
-                f'"{name}" AS "{column.column_id}"'
-                for name, column in zip(duckdb_names, self.columns, strict=True)
-            )
-            self.connection.execute(
-                f"CREATE VIEW {RAW_VIEW} AS SELECT {select_list} FROM {RAW_TABLE}"
-            )
+            # 원본 적재가 끝났으니 외부 접근(파일 함수·ATTACH)을 끈다. 이후 단계
+            # 쿼리는 메모리 테이블만 볼 수 있다(심층 방어).
+            self.connection.execute("SET enable_external_access = false")
         except BaseException:
             self.close()
             raise

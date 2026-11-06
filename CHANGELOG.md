@@ -7,7 +7,7 @@
 
 ### Added
 
-- 엔진 골격(T-0021): `AnalysisContext`(`src/autoetl/core/context.py`) — csv 모듈 판독(오류 경로는 v0 러너와 동일) + 프로세스 안 DuckDB 연결 1개(메모리 한도·스레드 설정, 임시 폴더는 실행 끝 예외 포함 정리), 원본을 전 값 VARCHAR로 적재한 `raw` 테이블과 위치 기반 내부 식별자(`c0`, `c1`, …) 뷰 `raw_view`. 원문 보존: 앞자리 0·지수 표기·공백 값 그대로, 따옴표 없는 빈 칸은 NULL·따옴표 빈 문자열("")은 ''로 구분(`allow_quoted_nulls=false`). 단계 모듈 `core/stages/s00_ingest.py` … `s14_report.py`로 분리(각 `run(ctx, 앞 산출물)` → 계약 산출물), `pipeline.py`는 순서 호출만. 산출물은 리팩터링 전과 동일(골든 Report 10종 대조). 새 의존성 duckdb(MIT). 단계 규약 문서 `src/autoetl/core/README.md`
+- 엔진 골격(T-0021): `AnalysisContext`(`src/autoetl/core/context.py`) — csv 모듈 판독(오류 경로는 v0 러너와 동일) + 프로세스 안 DuckDB 연결 1개(메모리 한도·스레드 설정, 임시 폴더는 실행 끝 예외 포함 정리), 원본을 전 값 VARCHAR로 적재한 `raw` 테이블(컬럼 이름 = 위치 기반 내부 식별자 `c0`, `c1`, … — 파일에서 온 헤더 문자열은 SQL에 넣지 않는다). 원문 보존: 앞자리 0·지수 표기·공백 값 그대로, 따옴표 없는 빈 칸은 NULL·따옴표 빈 문자열("")은 ''로 구분(`allow_quoted_nulls=false`). 연결 잠금(심층 방어): 확장 자동 설치·자동 로드 끔, 원본 적재 후 외부 접근(파일 함수·ATTACH) 차단, 식별자 인용 공용 헬퍼 `quote_identifier`. 단계 모듈 `core/stages/s00_ingest.py` … `s14_report.py`로 분리(각 `run(ctx, 앞 산출물)` → 계약 산출물), `pipeline.py`는 순서 호출만. 산출물은 리팩터링 전과 동일(골든 Report 10종 대조, 골든은 단계 과업이 산출물을 바꿀 때 함께 갱신). 새 의존성 duckdb(MIT). 단계 규약 문서 `src/autoetl/core/README.md`(SQL에는 코드가 만든 식별자와 매개변수만). 리드 검토(#97) 반영
 
 ### Changed
 

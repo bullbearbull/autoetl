@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import duckdb
 import pytest
 
-from autoetl.core.context import RAW_VIEW, AnalysisContext
+from autoetl.core.context import RAW_TABLE, AnalysisContext, quote_identifier
 from autoetl.core.errors import InputError
 
 
 def _values(ctx: AnalysisContext, column_id: str) -> list[object]:
-    rows = ctx.connection.execute(f'SELECT "{column_id}" FROM {RAW_VIEW}').fetchall()
+    rows = ctx.connection.execute(f'SELECT "{column_id}" FROM {RAW_TABLE}').fetchall()
     return [row[0] for row in rows]
 
 
@@ -26,7 +27,7 @@ def test_loads_100k_rows_with_counts(tmp_path: Path) -> None:
     with AnalysisContext(csv_path) as ctx:
         assert ctx.row_count == rows
         assert len(ctx.columns) == 3
-        counted = ctx.connection.execute(f"SELECT COUNT(*) FROM {RAW_VIEW}").fetchone()
+        counted = ctx.connection.execute(f"SELECT COUNT(*) FROM {RAW_TABLE}").fetchone()
         assert counted is not None and counted[0] == rows
 
 
@@ -54,8 +55,8 @@ def test_distinguishes_empty_string_from_missing(tmp_path: Path) -> None:
 
 
 def test_duplicate_headers_map_by_position(tmp_path: Path) -> None:
-    # 중복 헤더(a, a)는 DuckDB가 a, a_1로 고쳐 쓴다. 내부 식별자는 위치 기반이라
-    # 영향받지 않는다(벤치 multi_header 변형이 이 경우다).
+    # 중복 헤더(a, a). 컬럼 이름을 코드가 만든 식별자로 지정해 적재하므로
+    # 중복·특수문자와 무관하게 위치가 곧 신원이다(벤치 multi_header 변형).
     csv_path = tmp_path / "dup.csv"
     csv_path.write_text("a,a,b\n1,2,3\n4,5,6\n", encoding="utf-8")
     with AnalysisContext(csv_path) as ctx:
@@ -132,3 +133,56 @@ def test_input_errors_preserved(tmp_path: Path) -> None:
     huge.write_text("a,b\n1," + "x" * 200_000 + "\n", encoding="utf-8")
     with pytest.raises(InputError, match="읽지 못했다"):
         AnalysisContext(huge)
+
+
+# ── 리드 검토 #97 반영 — SQL 주입 방지·연결 잠금 ──────────────────────────────
+
+
+def test_special_character_headers_load_and_names_preserved(tmp_path: Path) -> None:
+    # 큰따옴표·세미콜론·SQL 조각 형태의 헤더도 적재에 성공하고 원래 이름이
+    # Python 쪽(ContextColumn)에 그대로 남는다. 헤더 문자열은 SQL에 들어가지
+    # 않으므로 적재가 깨지거나 다른 문장이 실행되지 않는다.
+    csv_path = tmp_path / "tricky.csv"
+    csv_path.write_text('a",b;c,x -- end\n1,2,3\n"x""y",4,5\n', encoding="utf-8")
+    with AnalysisContext(csv_path) as ctx:
+        assert [column.original_name for column in ctx.columns] == ['a"', "b;c", "x -- end"]
+        assert _values(ctx, "c0") == ["1", 'x"y']
+        assert _values(ctx, "c1") == ["2", "4"]
+        assert _values(ctx, "c2") == ["3", "5"]
+
+
+def test_malicious_header_has_no_side_effects(tmp_path: Path) -> None:
+    # 헤더에 SQL 문장 조각을 심어도 적재 외 부수 효과가 없다: 파일이 새로
+    # 생기지 않고, 헤더는 이름일 뿐이다.
+    csv_path = tmp_path / "attack.csv"
+    csv_path.write_text("a); SELECT 1; COPY system.tab TO 'out.txt'; --,b\n1,2\n", encoding="utf-8")
+    before = sorted(path.name for path in tmp_path.iterdir())
+    with AnalysisContext(csv_path) as ctx:
+        assert ctx.columns[0].original_name.startswith("a); SELECT 1")
+        assert _values(ctx, "c0") == ["1"]
+        # 이 크기의 적재에는 DuckDB 임시 폴더(스필)가 필요 없다 — 비어 있어야 한다.
+        assert list(ctx._temp_dir.rglob("*")) == []
+    after = sorted(path.name for path in tmp_path.iterdir())
+    assert after == before  # 헤더가 만든 파일이 없다
+
+
+def test_connection_locked_down_after_load(tmp_path: Path) -> None:
+    # 확장 자동 설치·로드 꺼짐, 적재 뒤에는 외부 접근(파일 함수)도 차단된다.
+    csv_path = tmp_path / "lock.csv"
+    csv_path.write_text("a\n1\n", encoding="utf-8")
+    with AnalysisContext(csv_path) as ctx:
+        for setting in ("autoinstall_known_extensions", "autoload_known_extensions"):
+            value = ctx.connection.execute(f"SELECT current_setting('{setting}')").fetchone()
+            assert value is not None and value[0] is False, setting
+        external = ctx.connection.execute(
+            "SELECT current_setting('enable_external_access')"
+        ).fetchone()
+        assert external is not None and external[0] is False
+        with pytest.raises(duckdb.PermissionException):
+            ctx.connection.execute("SELECT * FROM read_csv(?, header=true)", [str(csv_path)])
+
+
+def test_quote_identifier_escapes_embedded_quotes() -> None:
+    # 식별자 인용은 공용 함수로만: 내부 따옴표는 두 번으로 이스케이프된다.
+    assert quote_identifier("c0") == '"c0"'
+    assert quote_identifier('a"b') == '"a""b"'
