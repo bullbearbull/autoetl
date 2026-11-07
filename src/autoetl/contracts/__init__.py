@@ -51,6 +51,7 @@ from autoetl.contracts.relations import (
     Hierarchy,
     InclusionDependency,
     RelationGraph,
+    VerificationScope,
 )
 from autoetl.contracts.report import Report, ReportSection, ReportSectionId
 from autoetl.contracts.schema import (
@@ -181,4 +182,5 @@ __all__ = [
     "TypeAssignment",
     "UserQuestion",
     "ValidationSummary",
+    "VerificationScope",
 ]

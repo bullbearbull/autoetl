@@ -105,7 +105,7 @@
   "description": "S6 산출물: 품질 진단.\n\n완전성·유효성·일관성·유일성 네 차원 점수와 정제 권고로 이어질 이슈 목록.\n데이터셋 수준의 중복 행 수는 유일성 차원에 기록한다.",
   "properties": {
     "contract_version": {
-      "default": "0.1.0",
+      "default": "0.2.0",
       "title": "Contract Version",
       "type": "string"
     },

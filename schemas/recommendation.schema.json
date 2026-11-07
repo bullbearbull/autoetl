@@ -57,7 +57,7 @@
   "description": "S11 산출물: 권고(LLM 담당). 순위와 사유에 근거 ID 인용이 필수다.",
   "properties": {
     "contract_version": {
-      "default": "0.1.0",
+      "default": "0.2.0",
       "title": "Contract Version",
       "type": "string"
     },

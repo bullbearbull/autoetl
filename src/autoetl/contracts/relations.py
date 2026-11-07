@@ -17,6 +17,13 @@ class CandidateKey(ContractModel):
     violation_count: NonNegativeInt = Field(description="유일성 위반 행 수")
 
 
+class VerificationScope(str, Enum):
+    """FD 검증 범위. 전수 GROUP BY로 확정한 것만 full이다(실패 닫힘)."""
+
+    FULL = "full"
+    SAMPLE = "sample"
+
+
 class FunctionalDependency(ContractModel):
     """근사 함수 종속. lhs → rhs가 성립하는 비율과 위반 수를 함께 둔다."""
 
@@ -28,6 +35,9 @@ class FunctionalDependency(ContractModel):
     rhs: str
     support: float = Field(ge=0, le=1, description="lhs 값 중 rhs가 유일한 비율")
     violation_count: NonNegativeInt
+    verification: VerificationScope = VerificationScope.SAMPLE
+    """기본은 sample — 전수로 확정한 코드만 full로 적는다(확인하지 않은 것을
+    전수로 주장하지 않는다). S9·SOP 재검증 큐가 기계적으로 읽는다."""
 
 
 class InclusionDependency(ContractModel):
@@ -73,6 +83,10 @@ class RelationGraph(ContractModel):
 
     후보 키, 근사 함수 종속, 포함 종속, 상관, 파생, 계층을 담는다. FD 탐색은 좌변
     크기 제한과 샘플 탐색 후 전수 검증으로 조합 폭발을 제어한다.
+
+    notes는 운영 기록이다 — 작업량 예산 초과 사유, 범위 밖 항목(상호정보량·
+    파생·계층), 탐색에서 뺀 컬럼(상수 등). 컬럼 이름·집계 숫자만 담고 셀
+    값은 넣지 않는다(P1 공통 규칙).
     """
 
     contract_version: str = CONTRACTS_VERSION
@@ -82,3 +96,4 @@ class RelationGraph(ContractModel):
     correlations: list[Correlation] = Field(default_factory=list)
     derivations: list[Derivation] = Field(default_factory=list)
     hierarchies: list[Hierarchy] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)

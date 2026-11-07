@@ -49,7 +49,7 @@
   "description": "S14 산출물: 보고서.\n\nJSON 산출물을 템플릿(Jinja2)으로 렌더링해 HTML/PDF/Markdown으로 낸다.\n부록에는 분석 파라미터, SOP·프롬프트·모델 버전, 재현 정보가 들어간다.",
   "properties": {
     "contract_version": {
-      "default": "0.1.0",
+      "default": "0.2.0",
       "title": "Contract Version",
       "type": "string"
     },

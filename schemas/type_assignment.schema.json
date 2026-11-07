@@ -96,7 +96,7 @@
   "description": "S3 산출물: 컬럼 하나의 물리·의미 타입 판정.\n\n탐지기 신뢰도가 임계치를 넘으면 코드 확정(llm_resolved=false)이고, 모호한 컬럼만\nLLM에 질의한다(llm_resolved=true). LLM 판정에는 Evidence 인용이 필수다.\ndecimal 정밀도와 자릿수는 통계에서 온다(소수점이 있는데 INTEGER로 두면 안 된다).",
   "properties": {
     "contract_version": {
-      "default": "0.1.0",
+      "default": "0.2.0",
       "title": "Contract Version",
       "type": "string"
     },

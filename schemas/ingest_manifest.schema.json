@@ -97,7 +97,7 @@
   "description": "S0 산출물: 수집·정규화 결과 명세.\n\n인코딩 감지, 구분자·헤더 추론, 다중 행 헤더와 병합 셀 해제를 마친 뒤의 상태를\n기록한다. pandas 자동 형 변환으로 인한 정보 손실(앞자리 0, 지수 표기)을 막으려고\n모든 값을 문자열로 로드했음을 전제로 한다.",
   "properties": {
     "contract_version": {
-      "default": "0.1.0",
+      "default": "0.2.0",
       "title": "Contract Version",
       "type": "string"
     },

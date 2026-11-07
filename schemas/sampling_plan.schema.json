@@ -43,7 +43,7 @@
   "description": "S1 산출물: 샘플링 전략.\n\n전수 판정이 나면 샘플 없이 통계를 DuckDB로 스트리밍한다. 샘플 판정이면 시드를\n고정해 재현성을 보장한다.",
   "properties": {
     "contract_version": {
-      "default": "0.1.0",
+      "default": "0.2.0",
       "title": "Contract Version",
       "type": "string"
     },

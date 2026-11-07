@@ -88,7 +88,7 @@
   "description": "S7 산출물: 컬럼별 민감도 지도.\n\n민감도 등급은 LLM 라우팅, 외부 전송 범위, 로그 기록 수준을 결정하는 기본값이 된다.",
   "properties": {
     "contract_version": {
-      "default": "0.1.0",
+      "default": "0.2.0",
       "title": "Contract Version",
       "type": "string"
     },

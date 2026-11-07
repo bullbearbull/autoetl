@@ -273,7 +273,7 @@
   "description": "S4 산출물: 컬럼 하나의 심화 통계.\n\n종류(kind)에 따라 해당하는 하위 통계만 채운다. 나머지는 None으로 둔다.\n개별 값이 드러나는 최솟값·최댓값은 Secure 모드에서 외부로 나가지 않는다.",
   "properties": {
     "contract_version": {
-      "default": "0.1.0",
+      "default": "0.2.0",
       "title": "Contract Version",
       "type": "string"
     },

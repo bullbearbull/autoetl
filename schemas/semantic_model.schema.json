@@ -137,7 +137,7 @@
   "description": "S8 산출물: 의미 해석(LLM 담당).\n\n컬럼 의미, 엔터티 식별, 표준 영문 이름, 업무 도메인 추정. 모든 판단 항목에\nEvidence 인용이 필수다. 확신이 낮으면 사용자 질문을 만든다.",
   "properties": {
     "contract_version": {
-      "default": "0.1.0",
+      "default": "0.2.0",
       "title": "Contract Version",
       "type": "string"
     },
