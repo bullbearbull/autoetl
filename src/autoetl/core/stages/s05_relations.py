@@ -16,11 +16,13 @@
   행 수다. 채택한 FD는 전수 GROUP BY로 확정했으므로 verification=full이다.
 - 제거 규칙(리드 검토 #168·#174): 정규 피복을 동치 클래스 대표 위에서 만든다.
   대표는 S3 타입 랭크(identifier·integer > code > 그 밖) → 컬럼 순서. 단일
-  좌변 출력은 '대표 사이 FD(동치 경유 예외 없는 이행 축소) + 클래스마다
-  대표↔멤버 상호 FD'다. 복합 좌변·우변은 대표 컬럼만으로 조합하고(비대표는
-  '대표→멤버'가 도달한다), 다른 우변을 거쳐 도출되는 FD(X→t·t→c가 정확하면
-  X→c)와 단일 대표와 동치인 복합(X→r ∧ r이 X의 각 컬럼 결정)은 지운다. 키
-  좌변 FD는 대표 키 하나에서만 낸다. 근시 FD도 같은 규칙을 지난다.
+  좌변 출력은 '대표 사이 FD + 클래스마다 대표↔멤버 상호 FD'다(멤버→멤버는
+  내지 않는다 — 남기면 축소가 멤버→대표를 경유 삭제해 클래스 안 순환으로
+  도출 누락이 생긴다, 재검토 3차). 복합 좌변·우변은 대표 컬럼만으로 조합하고
+  (비대표는 '대표→멤버'가 도달한다), 다른 우변을 거쳐 도출되는 FD(X→t의 위반
+  행 수가 X→c 이하이고 t→c가 정확하면 X→c)와 단일 대표와 동치인 복합(X→r ∧
+  r이 X의 각 컬럼 결정)은 지운다. 키 좌변 FD는 대표 키 하나에서만 낸다.
+  근사 FD도 같은 규칙을 지난다.
 - 포함 종속: 단일 파일 입력에서는 빈 목록이다(다중 파일 입력 때).
 - 상관: 수치 쌍은 Pearson·Spearman(동률은 평균 순위 — 파티션 ROW_NUMBER
   평균, 12자리 반올림로 병렬 집계 흔들림 차단), 범주 쌍은 Cramér's V.
@@ -269,16 +271,20 @@ def _equivalence_classes(fds: list[FunctionalDependency]) -> dict[str, str]:
 def _reduce_cover(
     fds: list[FunctionalDependency], representative_of: dict[str, str]
 ) -> list[FunctionalDependency]:
-    """대표 그래프 정규 피복 축소(리드 #174 e·f).
+    """대표 그래프 정규 피복 축소(리드 #174 e·f, 재검토 3차의 e 일반화).
 
-    e: X→t와 t→c가 모두 정확(위반 0)하면 X→c는 다른 우변을 거쳐 도출된다 —
-    지운다. 우변이 비대표 동치 멤버인 FD는 '대표→멤버' 산출뿐이라 대상에서
-    뺀다(클래스 안 쌍을 경유로 삼으면 대표→멤버가 전부 지워진다).
+    e: X→t의 위반 행 수가 X→c의 위반 행 수 이하이고 t→c가 정확이면 X→c를
+    지운다. t→c가 정확하면 X→c를 어기는 좌변 그룹은 X→t도 어긴다(위반 행은
+    X→c 이하) — 조건이 성립하면 두 FD의 위반이 같아 X→c는 X→t와 t→c에서
+    같은 오차로 나온다. X→c가 정확하면 X→t도 정확이어야 하니 #174의 '정확
+    경로'는 이 조건의 특수한 경우다. 우변이 비대표 동치 멤버인 FD는 '대표→
+    멤버' 산출뿐이라 대상에서 뺀다(클래스 안 쌍을 경유로 삼으면 대표→멤버가
+    전부 지워진다).
     f: 복합 X→r이 정확하고 단일 r이 X의 각 컬럼을 결정하면 X는 r과 동치다 —
     엔터티 키 r이 그 사실을 말하므로 X는 FD를 내지 않는다.
-    근시 경로는 도출 보장이 없어 재료가 되지 못한다.
     """
-    exact_keys = {(tuple(fd.lhs), fd.rhs) for fd in fds if fd.violation_count == 0}
+    violation_of = {(tuple(fd.lhs), fd.rhs): fd.violation_count for fd in fds}
+    exact_keys = {key for key, count in violation_of.items() if count == 0}
     single_exact = {(lhs[0], rhs) for lhs, rhs in exact_keys if len(lhs) == 1}
     middles = {a for a, _ in single_exact}
     equivalent_compounds: set[tuple[str, ...]] = set()
@@ -291,7 +297,10 @@ def _reduce_cover(
         if lhs in equivalent_compounds:
             continue
         if representative_of.get(rhs, rhs) == rhs and any(
-            middle != rhs and (lhs, middle) in exact_keys and (middle, rhs) in single_exact
+            middle != rhs
+            and (lhs, middle) in violation_of
+            and violation_of[(lhs, middle)] <= fd.violation_count
+            and (middle, rhs) in single_exact
             for middle in middles
         ):
             continue
@@ -514,9 +523,12 @@ def run(
     def _is_representative(name: str) -> bool:
         return representative_of.get(name, name) == name
 
-    # 단일 좌변 출력(리드 #174 c): (1) 동치 클래스 안의 정확 상호 FD 전부
-    # (대표→멤버·멤버→대표 — 대체 키 정보), (2) 대표 사이 FD(정확·근시 —
-    # 비대표 lhs·우변은 여기서 빠진다: 비대표는 (1)로 도달한다).
+    # 단일 좌변 출력(리드 #174 c·재검토 3차): (1) 동치 클래스 안은 대표↔멤버
+    # 상호 FD만 남긴다(대체 키 정보). 멤버→멤버를 내면 축소 e가 그것을 경유로
+    # 멤버→대표를 지워 클래스 안이 서로를 가리키며 순환하다 도출 누락이
+    # 생긴다(email→phone·phone→email만 남고 email→customer_id가 사라지던 것).
+    # (2) 대표 사이 FD(정확·근사 — 비대표 lhs·우변은 여기서 빠진다: 비대표는
+    # (1)로 도달한다).
     fds = [
         fd
         for fd in fds
@@ -526,6 +538,7 @@ def run(
                 fd.violation_count == 0
                 and fd.lhs[0] in equivalent
                 and equivalent.get(fd.rhs) == equivalent[fd.lhs[0]]
+                and (_is_representative(fd.lhs[0]) or _is_representative(fd.rhs))
             )
             or (_is_representative(fd.lhs[0]) and _is_representative(fd.rhs))
         )
@@ -575,7 +588,7 @@ def run(
             f"좌변 후보 예산({lhs_budget}) 초과 — 크기 {lhs_budget_hit - 1}까지 검증, "
             f"남은 후보 약 {remaining}개"
         )
-    # 정규 피복 축소(리드 #174 e·f) — 근시 FD도 같은 규칙을 지난다.
+    # 정규 피복 축소(리드 #174 e·f) — 근사 FD도 같은 규칙을 지난다.
     fds = _reduce_cover(_minimal_lhs(fds), representative_of)
     fds.sort(key=lambda fd: (len(fd.lhs), fd.lhs, fd.rhs))
     notes.append("상호정보량·파생 컬럼·계층 구조는 이번 범위 밖이다(빈 목록)")

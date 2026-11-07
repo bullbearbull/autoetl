@@ -10,7 +10,7 @@ from bench.generator import PACKS, build_dataset
 from bench.scoring import _column_ids, _id_map, _truth_fds
 
 from autoetl.contracts import CorrelationMethod, RelationGraph
-from autoetl.core.context import AnalysisContext
+from autoetl.core.context import AnalysisContext, quote_identifier
 from autoetl.core.pipeline import run_pipeline
 from autoetl.core.stages import s00_ingest, s01_sampling, s02_profile, s03_types, s05_relations
 
@@ -349,3 +349,103 @@ def test_key_budget_stops_search(tmp_path: Path) -> None:
     rows = [f"{i % 7},{i % 5},{i % 3},{i % 11}" for i in range(1, 201)]
     graph = _run_s5(tmp_path, "key_budget", "a,b,c,d", rows, key_budget=1)
     assert any("키 조합 예산(1) 초과" in note for note in graph.notes)
+
+
+# ── 리드 재검토(3차) — 동치 클래스 3개 이상·근사 경유·피복 동치 ────────
+
+
+def test_equivalence_class_members_reach_representative_only(tmp_path: Path) -> None:
+    # 리드 재현: 고객 60명이 주문 10행씩(600행)인 데이터에서 customer_id·email·
+    # 서로 1-1이라 동치 클래스가 4개짜리가 된다. 클래스 안 출력은 대표↔멤버만 —
+    # 멤버→멤버(email→phone)를 내면 축소 e가 그것을 경유로 멤버→대표
+    # (email→customer_id)를 지워 대체 키 정보가 사라진다.
+    rows = [
+        f"{i},{(i - 1) % 60 + 1},user{(i - 1) % 60 + 1}@ex.io,"
+        f"010-{(i - 1) % 60 + 1:04d},g{(i - 1) % 60 + 1:02d}"
+        for i in range(1, 601)
+    ]
+    graph = _run_s5(tmp_path, "equiv4", "order_id,customer_id,email,phone,grade", rows)
+    fd_pairs = {(tuple(fd.lhs), fd.rhs) for fd in graph.functional_dependencies}
+    assert (("email",), "customer_id") in fd_pairs  # 멤버→대표가 남는다
+    assert (("phone",), "customer_id") in fd_pairs
+    assert (("customer_id",), "email") in fd_pairs  # 대표→멤버도 남는다
+    assert (("email",), "phone") not in fd_pairs  # 멤버→멤버는 내지 않는다
+    assert (("phone",), "grade") not in fd_pairs
+
+
+@pytest.mark.parametrize("pack_name", sorted(PACKS))
+def test_output_closure_covers_exact_single_fds(
+    datasets: dict[str, Path],
+    graphs: dict[tuple[str, str], RelationGraph],
+    pack_name: str,
+) -> None:
+    # 리드 재검토(3차): 정규화 뷰의 정확 단일 FD 전체(E)가 출력 정확 FD의 이행
+    # 폐포로 전부 도출되는지 확인한다 — '동시 삭제'류 결함을 한 규칙에 묶이지
+    # 않고 막는다.
+    path = datasets[pack_name] / "clean.csv"
+    spec = s00_ingest.probe_source(path)
+    with AnalysisContext(path, spec=spec) as ctx:
+        ingest = s00_ingest.run(ctx, spec)
+        profiles = s02_profile.run(ctx, ingest, s01_sampling.run(ctx))
+        s03_types.run(ctx, ingest, profiles)
+        view = ctx.normalized_view
+        assert view is not None
+        quoted = {
+            column.name: quote_identifier(ctx.column_id_of(column.index))
+            for column in ingest.columns
+        }
+        names = [column.name for column in ingest.columns]
+        cardinality: dict[str, int] = {}
+        for name in names:
+            count_row = ctx.connection.execute(
+                f"SELECT COUNT(DISTINCT {quoted[name]}) FROM {view}"
+            ).fetchone()
+            cardinality[name] = int(count_row[0] or 0) if count_row is not None else 0
+        exact: set[tuple[str, str]] = set()
+        for lhs in names:
+            for rhs in names:
+                # 상수 우변은 자명하다(S5가 좌변·우변 후보에서 뺀다) — E에서도 뺀다.
+                if lhs == rhs or cardinality[rhs] <= 1:
+                    continue
+                row = ctx.connection.execute(
+                    f"SELECT EXISTS (SELECT 1 FROM {view} WHERE {quoted[lhs]} IS NOT NULL "
+                    f"AND {quoted[rhs]} IS NOT NULL GROUP BY {quoted[lhs]} "
+                    f"HAVING COUNT(DISTINCT {quoted[rhs]}) > 1)"
+                ).fetchone()
+                if row is not None and not row[0]:
+                    exact.add((lhs, rhs))
+    edges = {
+        (fd.lhs[0], fd.rhs)
+        for fd in graphs[(pack_name, "clean")].functional_dependencies
+        if len(fd.lhs) == 1 and fd.violation_count == 0
+    }
+    derived: dict[str, set[str]] = {}
+
+    def closure(start: str) -> set[str]:
+        if start not in derived:
+            reachable: set[str] = set()
+            frontier = [start]
+            while frontier:
+                node = frontier.pop()
+                for a, b in edges:
+                    if a == node and b not in reachable:
+                        reachable.add(b)
+                        frontier.append(b)
+            derived[start] = reachable
+        return derived[start]
+
+    missing = {(lhs, rhs) for lhs, rhs in exact if rhs not in closure(lhs)}
+    assert not missing, f"출력 폐포로 도출되지 않는 정확 단일 FD: {sorted(missing)}"
+
+
+def test_compound_lhs_via_album_fd_reduced(
+    graphs: dict[tuple[str, str], RelationGraph],
+) -> None:
+    # 리드 재검토(3차): 경유 제거를 근사로 일반화 — X→t의 위반 행 수가 X→c
+    # 이하이고 t→c가 정확이면 X→c는 지운다. music clean의 (genre, release_date)
+    # 근사 FD(위반 8행)는 → album_id 하나로 줄어난다(이전 5개).
+    graph = graphs[("music", "clean")]
+    count = sum(
+        1 for fd in graph.functional_dependencies if set(fd.lhs) == {"genre", "release_date"}
+    )
+    assert count <= 1, f"(genre, release_date) 좌변 FD가 {count}개다"
