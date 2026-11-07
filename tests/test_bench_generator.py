@@ -271,7 +271,7 @@ def test_hard_variant_uses_nameless_field_row_and_block_labels() -> None:
     kinds = [column.kind for column in layout]
     order = column_order("hard", len(header), seed=1)
     shuffled_kinds = [kinds[i] for i in order]
-    block_kinds = {label: set() for label in dict.fromkeys(group_row)}
+    block_kinds: dict[str, set[str]] = {label: set() for label in dict.fromkeys(group_row)}
     for i, kind in enumerate(shuffled_kinds):
         block_kinds[group_row[i]].add(kind)
     assert len(block_kinds) >= 2
