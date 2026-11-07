@@ -135,7 +135,8 @@
         },
         "verification": {
           "$ref": "#/$defs/VerificationScope",
-          "default": "sample"
+          "default": "sample",
+          "description": "기본은 sample — 전수로 확정한 코드만 full로 적는다(확인하지 않은 것을 전수로 주장하지 않는다). S9·SOP 재검증 큐가 기계적으로 읽는다."
         }
       },
       "required": [

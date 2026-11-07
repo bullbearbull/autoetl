@@ -35,9 +35,11 @@ class FunctionalDependency(ContractModel):
     rhs: str
     support: float = Field(ge=0, le=1, description="lhs 값 중 rhs가 유일한 비율")
     violation_count: NonNegativeInt
-    verification: VerificationScope = VerificationScope.SAMPLE
-    """기본은 sample — 전수로 확정한 코드만 full로 적는다(확인하지 않은 것을
-    전수로 주장하지 않는다). S9·SOP 재검증 큐가 기계적으로 읽는다."""
+    verification: VerificationScope = Field(
+        default=VerificationScope.SAMPLE,
+        description="기본은 sample — 전수로 확정한 코드만 full로 적는다(확인하지 "
+        "않은 것을 전수로 주장하지 않는다). S9·SOP 재검증 큐가 기계적으로 읽는다.",
+    )
 
 
 class InclusionDependency(ContractModel):

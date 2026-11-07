@@ -1,29 +1,32 @@
 """S5 관계 분석 — 후보 키·근사 함수 종속·상관(T-0026).
 
 모든 계산은 S3의 정규화 뷰(ctx.normalized_view) 위에서 한다(리드 결정). 원문
-값으로 하면 형식 혼재·앞자리 0 때문에 유일성과 함수 종속이 깨진다.
+값으로 하면 형식 혼재·앞자리 0 때문에 유일성과 함수 종속이 깨진다. 결측·상수
+판정도 뷰 기준이다 — S3 정규화 실패로 NULL이 된 값(원문 결측 아님)이 있는
+컬럼은 키가 될 수 없다.
 
-- 후보 키: 결측 없는 컬럼 조합(기본 최대 3컬럼)의 유일성. 상수 컬럼은 후보에서
-  뺀다. 유일한 조합을 진부분집합으로 갖는 상위 조합은 만들지 않는다(최소성 +
-  조합 폭발 제어).
+- 후보 키: 결측 없는 비상수 컬럼 조합(기본 최대 3컬럼)의 유일성. 상수 컬럼과
+  거의 유일한 컬럼(고유 비율 0.95 이상·유일 아님 — unit_price류)은 복합 조합에서
+  뺀다. 유일한 조합의 상위 조합은 만들지 않는다(최소성 + 폭발 제어).
 - 근사 FD: 좌변 크기 기본 2 이하(계약 상한 3까지 설정 가능). 좌변·우변의 결측
-  행은 위반에서 뺀다. support는 'lhs 값 중 rhs가 유일한 비율'(계약 설명)이고
-  위반 lhs 값 비율 1% 이하면 채택한다. violation_count는 위반 lhs 값에 속한
+  행은 위반에서 뺀다. 채택은 행 기준(위반 행 수 ÷ 우변 관측 행 수 ≤ 1%)이고
+  근사(위반 > 0)는 좌변 평균 그룹 크기가 2 이상일 때만 받는다 — 거의 유일한
+  좌변은 그룹이 대부분 한 행이라 구조상 근사 FD가 된다. support는 'lhs 값 중
+  rhs가 유일한 비율'(그룹 기준, 계약 설명), violation_count는 위반 lhs 값의
   행 수다. 채택한 FD는 전수 GROUP BY로 확정했으므로 verification=full이다.
-  진부분집합 좌변이 같은 우변을 정확히 결정하는 FD는 제거한다(최소 좌변).
-  키 lhs의 이행(PK→FK→부모 비키)으로 도출되는 FD도 제거한다 — 키가 아닌
-  lhs의 직접 종속(예: FK→부모 PK)은 정답 FD라 그대로 둔다. 유일한 단일
-  컬럼을 포함한 복합 좌변은 만들지 않고, 동치 키(서로 1-1인 유일 컬럼)는
-  대표(컬럼 순서 첫 번째)만 결정자 역할을 한다(리드 결정 #164).
-- 포함 종속: 단일 파일 입력에서는 빈 목록이다(파일 간 포함 종속은 다중 파일
-  입력 때).
-- 상관: 수치 쌍은 Pearson·Spearman, 낮은 카디널리티 범주 쌍은 Cramér's V.
-  상호정보량·파생 컬럼·계층 구조는 이번 범위 밖이다(빈 목록 + notes).
-- 폭발 제어: 카디널리티 상한 커트(조합 필요조건), 좌변 하나당 쿼리 하나(우변
-  전체 동시 측정), 검증 좌변 후보 수 예산(벽시계가 아니라 작업량 — 결정론).
-  예산을 넘으면 거기까지의 결과와 남은 후보 수를 notes에 남긴다. 상수·결측
-  컬럼 제외도 notes에 남긴다. SQL에는 내부 식별자(c0…)만 들어가고(단계
-  규약) 집계 숫자만 다룬다.
+- 제거 규칙(리드 검토 #168): 진부분집합 좌변이 같은 우변을 정확히 결정하면
+  제거(최소 좌변). 키 좌변 FD는 대표 키(크기 → S3 타입 랭크 identifier·
+  integer > code > 그 밖 → 컬럼 순서) 하나에서만 낸다. 동치 컬럼(서로 정확히
+  결정하는 단일 컬럼)도 같은 대표 규칙으로 대표만 결정자다. 이행 제거는 대표들
+  사이에 일반 적용(a→b·b→c가 정확하고 b·c가 동치가 아니면 a→c 제거).
+- 포함 종속: 단일 파일 입력에서는 빈 목록이다(다중 파일 입력 때).
+- 상관: 수치 쌍은 Pearson·Spearman(동률은 평균 순위 — 파티션 ROW_NUMBER
+  평균, 12자리 반올림로 병렬 집계 흔들림 차단), 범주 쌍은 Cramér's V.
+  상호정보량·파생·계층은 이번 범위 밖이다(빈 목록 + notes).
+- 폭발 제어: 카디널리티 커트(card(rhs) ≤ card(lhs) + 허용 위반 행 수), 좌변
+  하나당 쿼리 하나(우변 전체 동시 측정), 키·FD 각각 작업량 예산(검증 조합
+  수 — 벽시계가 아니라 결정론). 예산 초과·제외 컬럼은 notes에 남긴다. SQL에는
+  내부 식별자(c0…)만 들어가고(단계 규약) 집계 숫자만 다룬다.
 """
 
 from __future__ import annotations
@@ -40,6 +43,7 @@ from autoetl.contracts import (
     IngestManifest,
     PhysicalType,
     RelationGraph,
+    SemanticType,
     TypeAssignment,
     VerificationScope,
 )
@@ -52,21 +56,40 @@ MAX_LHS = 2
 """FD 좌변 기본 최대 크기(계약 상한 3까지 설정 가능)."""
 
 FD_VIOLATION_RATE = 0.01
-"""근사 FD 채택 위반률 상한."""
+"""근사 FD 채택 위반률 상한(행 기준)."""
+
+KEY_BUDGET = 1000
+"""키 검증 조합 수 예산(작업량 기준 — 결정론)."""
 
 LHS_BUDGET = 1000
-"""FD 검증 좌변 후보 수 예산(리드 결정 #164).
+"""FD 검증 좌변 후보 수 예산(작업량 기준 — 결정론)."""
 
-벽시계 시간이 아니라 검증한 좌변 후보 수로 잰다 — PC 속도에 따라 같은
-입력의 그래프가 달라지면 결정론 규칙을 깬다. 기본값은 벤치 두 팩 7변형이
-걸리지 않는 넉넉한 크기다(orders_kr ≈ 153, music ≈ 120).
-"""
+NEAR_UNIQUE_RATIO = 0.95
+"""거의 유일 컬럼 판정 비율(이상·유일 미만) — 복합 키·좌변 조합에서 뺀다."""
+
+MIN_AVG_GROUP = 2.0
+"""근사 FD(위반 > 0)를 받는 최소 좌변 평균 그룹 크기(행 수 ÷ lhs 고유값 수)."""
 
 CATEGORY_CARDINALITY_LIMIT = 20
 """Cramér's V를 계산할 범주 컬럼의 고유값 상한."""
 
 NUMERIC_TYPES = frozenset({PhysicalType.INTEGER, PhysicalType.DECIMAL, PhysicalType.FLOAT})
 CATEGORY_TYPES = frozenset({PhysicalType.STRING, PhysicalType.BOOLEAN})
+
+
+def _type_rank(assignment: TypeAssignment, position: int) -> tuple[int, int]:
+    """동치·키 대표 선정 우선순위(리드 #168): 정수(identifier·integer) > 코드 >
+    그 밖, 같으면 컬럼 순서. 낮을수록 좋다."""
+    if assignment.semantic_type is SemanticType.IDENTIFIER or (
+        assignment.semantic_type is not SemanticType.CODE
+        and assignment.physical_type is PhysicalType.INTEGER
+    ):
+        rank = 0
+    elif assignment.semantic_type is SemanticType.CODE:
+        rank = 1
+    else:
+        rank = 2
+    return (rank, position)
 
 
 def _is_unique(ctx: AnalysisContext, view: str, quoted: list[str]) -> bool:
@@ -84,13 +107,12 @@ def _is_unique(ctx: AnalysisContext, view: str, quoted: list[str]) -> bool:
 
 def _fd_measures(
     ctx: AnalysisContext, view: str, lhs_quoted: list[str], rhs_quoted: list[str]
-) -> dict[str, tuple[int, int, int, int]]:
-    """한 좌변에서 모든 우변의 (위반 lhs 그룹 수, lhs 그룹 수, 위반 행 수,
-    우변 관측 행 수)를 한 쿼리로 잰다.
+) -> tuple[float, dict[str, tuple[int, int, int, int]]]:
+    """한 좌변의 평균 그룹 크기와 모든 우변의 (위반 lhs 그룹 수, lhs 그룹 수,
+    위반 행 수, 우변 관측 행 수)를 한 쿼리로 잰다.
 
-    support는 'lhs 값 중 rhs가 유일한 비율'(계약 설명) — 그룹 기준이다.
     우변 결측 행은 COUNT(우변)으로 빠진다(위반 아님). 좌변 결측 행은 WHERE로
-    뺀다. 별칭은 quoted 식별자와 충돌하지 않는다.
+    뺀다. 채택은 행 기준(위반 행 ÷ 관측 행), 근사 게이트는 평균 그룹 크기다.
     """
     aliases = [f"r{i}" for i in range(len(rhs_quoted))]
     lhs_group = ", ".join(lhs_quoted)
@@ -99,28 +121,32 @@ def _fd_measures(
         f"COUNT({column}) AS {alias}_rows, COUNT(DISTINCT {column}) AS {alias}_cnt"
         for column, alias in zip(rhs_quoted, aliases, strict=True)
     )
-    selects = ", ".join(
-        f"COALESCE(SUM(CASE WHEN {alias}_cnt > 1 THEN 1 END), 0), COUNT(*), "
-        f"COALESCE(SUM(CASE WHEN {alias}_cnt > 1 THEN {alias}_rows END), 0), "
-        f"COALESCE(SUM({alias}_rows), 0)"
-        for alias in aliases
+    selects = (
+        "COALESCE(SUM(n) / COUNT(*), 0), "  # 평균 그룹 크기(행 수 ÷ lhs 그룹 수)
+        + ", ".join(
+            f"COALESCE(SUM(CASE WHEN {alias}_cnt > 1 THEN 1 END), 0), COUNT(*), "
+            f"COALESCE(SUM(CASE WHEN {alias}_cnt > 1 THEN {alias}_rows END), 0), "
+            f"COALESCE(SUM({alias}_rows), 0)"
+            for alias in aliases
+        )
     )
     row = ctx.connection.execute(
         f"SELECT {selects} FROM "
-        f"(SELECT {lhs_group}, {aggregates} FROM {view} "
+        f"(SELECT {lhs_group}, COUNT(*) AS n, {aggregates} FROM {view} "
         f"WHERE {lhs_not_null} GROUP BY {lhs_group})"
     ).fetchone()
     if row is None:
-        return {}
-    return {
+        return 0.0, {}
+    measures = {
         column: (
-            int(row[i * 4] or 0),
             int(row[i * 4 + 1] or 0),
             int(row[i * 4 + 2] or 0),
             int(row[i * 4 + 3] or 0),
+            int(row[i * 4 + 4] or 0),
         )
         for i, column in enumerate(rhs_quoted)
     }
+    return float(row[0] or 0), measures
 
 
 def _finite(value: object) -> float | None:
@@ -140,14 +166,18 @@ def _pearson(ctx: AnalysisContext, view: str, a: str, b: str) -> float | None:
 
 
 def _spearman(ctx: AnalysisContext, view: str, a: str, b: str) -> float | None:
-    """순위(동률 평균)를 매긴 뒤 Pearson. RANK의 동률은 파티션 평균으로 푼다."""
+    """순위 상관. 동률은 평균 순위로 푼다(파티션 ROW_NUMBER 평균).
+
+    RANK()는 동률에 최소 순위를 줘서 평균을 내도 그대로다(리드 #168) — 값
+    파티션의 ROW_NUMBER 평균이 표준 평균 순위다.
+    """
     row = ctx.connection.execute(
         f"WITH pairs AS (SELECT {a} AS x, {b} AS y FROM {view} "
         f"WHERE {a} IS NOT NULL AND {b} IS NOT NULL), "
-        f"xr AS (SELECT AVG(rk) OVER (PARTITION BY x) AS rx, y FROM "
-        f"(SELECT x, y, RANK() OVER (ORDER BY x) AS rk FROM pairs)), "
-        f"yr AS (SELECT rx, AVG(rk) OVER (PARTITION BY y) AS ry FROM "
-        f"(SELECT rx, y, RANK() OVER (ORDER BY y) AS rk FROM xr)) "
+        f"xr AS (SELECT AVG(rn) OVER (PARTITION BY x) AS rx, y FROM "
+        f"(SELECT x, y, ROW_NUMBER() OVER (ORDER BY x) AS rn FROM pairs)), "
+        f"yr AS (SELECT rx, AVG(rn) OVER (PARTITION BY y) AS ry FROM "
+        f"(SELECT rx, y, ROW_NUMBER() OVER (ORDER BY y) AS rn FROM xr)) "
         f"SELECT corr(rx, ry) FROM yr"
     ).fetchone()
     return _finite(row[0]) if row is not None else None
@@ -206,26 +236,54 @@ def _minimal_lhs(fds: list[FunctionalDependency]) -> list[FunctionalDependency]:
     return kept
 
 
-def _drop_key_lhs_transitive(
-    fds: list[FunctionalDependency], unique_single: set[str]
-) -> list[FunctionalDependency]:
-    """키 lhs의 이행(PK→FK→부모 비키)으로 도출되는 FD를 제거한다(리드 #164).
+def _equivalence_classes(fds: list[FunctionalDependency]) -> dict[str, str]:
+    """서로 정확히 결정하는 단일 컬럼 쌍을 동치 클래스로 묶어 대표를 정한다.
 
-    lhs가 유일 단일 컬럼(키)인 a→c만 대상이다. a→b·b→c가 모두 정확(위반 0)
-    성립하면 a→c는 이행으로 도출된다 — 리프 PK가 부모 컬럼 전부를 결정하는
-    FD 떼박이를 막는다. 키가 아닌 lhs(예: FK→부모 컬럼)의 직접 종속은 그대로
-    둔다(정답 FD 재현율). 근사 경로는 도출 보장이 없어 자격이 없다.
+    대표는 S3 타입 랭크(identifier·integer > code > 그 밖) → 컬럼 순서.
+    반환은 (컬럼 → 대표) 맵. 대표가 아닌 컬럼은 대표와의 상호 FD만 남긴다.
+    """
+    exact = {(fd.lhs[0], fd.rhs) for fd in fds if len(fd.lhs) == 1 and fd.violation_count == 0}
+    parent: dict[str, str] = {}
+
+    def find(name: str) -> str:
+        root = name
+        while parent.get(root, root) != root:
+            root = parent[root]
+        return root
+
+    def union(a: str, b: str) -> None:
+        for name in (a, b):
+            parent.setdefault(name, name)
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for a, b in exact:
+        if (b, a) in exact:  # 양방향 정확 성립 = 동치
+            union(a, b)
+    return {name: find(name) for name in parent}
+
+
+def _drop_transitive(
+    fds: list[FunctionalDependency], equivalent: dict[str, str]
+) -> list[FunctionalDependency]:
+    """이행(a→b·b→c가 정확하고 b·c가 동치가 아니면 a→c 제거)을 일반 적용한다.
+
+    동치 쌍을 경유하면 a→c는 다른 정보라 지우지 않는다(FK 직접 종속 보존).
+    근사 경로는 도출 보장이 없어 자격이 없다.
     """
     exact = {(fd.lhs[0], fd.rhs) for fd in fds if len(fd.lhs) == 1 and fd.violation_count == 0}
     middles = {a for a, _ in exact}
     kept: list[FunctionalDependency] = []
     for fd in fds:
-        if len(fd.lhs) == 1 and fd.lhs[0] in unique_single:
+        if len(fd.lhs) == 1:
             a, c = fd.lhs[0], fd.rhs
-            # b→c가 성립하고 c→b는 성립하지 않아야 계층상 부모 방향이다
-            # (b↔c가 동치면 a→c는 다른 정보라 지우지 않는다).
             if any(
-                b != a and b != c and (a, b) in exact and (b, c) in exact and (c, b) not in exact
+                b != a
+                and b != c
+                and (a, b) in exact
+                and (b, c) in exact
+                and equivalent.get(b, b) != equivalent.get(c, c)
                 for b in middles
             ):
                 continue
@@ -257,6 +315,11 @@ def _correlations(
     return result
 
 
+def _remaining_combinations(pool_size: int, from_size: int, max_size: int) -> int:
+    """남은 조합 수를 조합 공식으로 계산한다(예산 초과 notes용 근사)."""
+    return sum(math.comb(pool_size, size) for size in range(from_size, max_size + 1))
+
+
 def run(
     ctx: AnalysisContext,
     ingest: IngestManifest,
@@ -267,6 +330,7 @@ def run(
     max_lhs: int = MAX_LHS,
     fd_violation_rate: float = FD_VIOLATION_RATE,
     category_cardinality_limit: int = CATEGORY_CARDINALITY_LIMIT,
+    key_budget: int = KEY_BUDGET,
     lhs_budget: int = LHS_BUDGET,
 ) -> RelationGraph:
     """정규화 뷰 위에서 후보 키·근사 FD·상관을 잰다. 같은 입력은 같은 그래프다."""
@@ -276,46 +340,64 @@ def run(
     if view is None:
         raise ValueError("S3 정규화 뷰가 없다 — S5는 S3 다음에만 돈다")
 
-    profile_by = {profile.column: profile for profile in profiles}
     type_by = {assignment.column: assignment for assignment in types}
     quoted = {
         column.name: quote_identifier(ctx.column_id_of(column.index)) for column in ingest.columns
     }
     names = [column.name for column in ingest.columns]
+    position = {name: index for index, name in enumerate(names)}
     notes: list[str] = []
-    # 상수 컬럼은 좌변·우변 모두에서 뺀다(어떤 좌변이든 결정한다 — FD 폭발).
-    # 결측이 있는 컬럼은 키·좌변 후보에서 뺀다. 제외 컬럼 이름은 notes에 남긴다.
-    constants = sorted(name for name in names if profile_by[name].unique_count <= 1)
-    if constants:
-        notes.append("상수 컬럼은 좌변·우변 후보에서 뺐다: " + ", ".join(constants))
-    missing_cols = sorted(name for name in names if profile_by[name].missing_count > 0)
-    if missing_cols:
-        notes.append("결측이 있는 컬럼은 키·좌변 후보에서 뺐다: " + ", ".join(missing_cols))
-    # 키·좌변 후보: 결측 없는 비상수 컬럼. 우변은 상수가 아닌 컬럼 전부
-    # (결측 허용 — 위반 계산에서 뺀다).
-    complete = [name for name in names if profile_by[name].missing_count == 0]
-    nonconstant = sorted(name for name in complete if profile_by[name].unique_count > 1)
-    rhs_pool = sorted(name for name in names if profile_by[name].unique_count > 1)
-    row_count = profiles[0].count if profiles else 0
-    # 카디널리티는 정규화 뷰에서 직접 잰다(한 컬럼 한 쿼리). S2 프로파일은 원문
-    # 기준이라 형식 혼재·시리얼 변형에서 실제보다 크다 — 커트에 쓰면 성립하는
-    # FD를 잘못 스킵한다.
+
+    # 뷰 기준 통계(행 수·결측 아닌 값 수·고유값 수): 결측·상수 판정도 뷰에서
+    # 한다 — S3 정규화 실패로 NULL이 된 값(원문 결측 아님)이 있는 컬럼이
+    # 키가 되는 것을 막는다(리드 #168). S2 프로파일은 원문 기준이라 쓰지
+    # 않는다. 카디널리티 커트도 이 값으로 한다.
+    total_row = ctx.connection.execute(f"SELECT COUNT(*) FROM {view}").fetchone()
+    row_total = int(total_row[0] or 0) if total_row is not None else 0
+    non_null: dict[str, int] = {}
     cardinality: dict[str, int] = {}
     for name in names:
-        card_row = ctx.connection.execute(
-            f"SELECT COUNT(DISTINCT {quoted[name]}) FROM {view}"
+        stat_row = ctx.connection.execute(
+            f"SELECT COUNT({quoted[name]}), COUNT(DISTINCT {quoted[name]}) FROM {view}"
         ).fetchone()
-        cardinality[name] = int(card_row[0] or 0) if card_row is not None else 0
+        non_null[name] = int(stat_row[0] or 0) if stat_row is not None else 0
+        cardinality[name] = int(stat_row[1] or 0) if stat_row is not None else 0
+
+    # 상수 컬럼은 좌변·우변 모두에서 뺀다(어떤 좌변이든 결정한다 — FD 폭발).
+    # 결측이 있는 컬럼은 키·좌변 후보에서 뺀다. 제외 컬럼 이름은 notes에 남긴다.
+    constants = sorted(name for name in names if cardinality[name] <= 1)
+    if constants:
+        notes.append("상수 컬럼은 좌변·우변 후보에서 뺐다: " + ", ".join(constants))
+    missing_cols = sorted(name for name in names if non_null[name] < row_total)
+    if missing_cols:
+        notes.append(
+            "결측이 있는 컬럼(정규화 뷰 기준)은 키·좌변 후보에서 뺐다: " + ", ".join(missing_cols)
+        )
+    # 키·좌변 후보: 결측 없는 비상수 컬럼. 우변은 상수가 아닌 컬럼 전부.
+    nonconstant = sorted(
+        name for name in names if non_null[name] == row_total and cardinality[name] > 1
+    )
+    rhs_pool = sorted(name for name in names if cardinality[name] > 1)
+    # 거의 유일한 컬럼(0.95 이상·유일 아님)은 복합 조합에서 뺀다 — 붙이면
+    # 대부분 유일해져 우연 키·FD가 쏟아진다.
+    near_unique = sorted(
+        name for name in nonconstant if NEAR_UNIQUE_RATIO <= cardinality[name] / row_total < 1.0
+    )
+    if near_unique:
+        notes.append("거의 유일한 컬럼은 복합 키·좌변 조합에서 뺐다: " + ", ".join(near_unique))
+    compound_pool = [name for name in nonconstant if name not in near_unique]
 
     # ── 후보 키 ──────────────────────────────────────────────────────
     # 카디널리티 상한 커트(정확한 필요조건): 조합 distinct는 각 컬럼 고유값
-    # 수의 곱 이하라, 곱이 행 수에 못 미치면 유일이 불가능하다 — 쿼리하지
-    # 않는다.
+    # 수의 곱 이하라, 곱이 행 수에 못 미치면 유일이 불가능하다.
     keys: list[CandidateKey] = []
     unique_single: set[str] = set()
     key_columns: set[frozenset[str]] = set()
+    key_verified = 0
+    key_budget_hit: int | None = None
     for size in range(1, max_key_columns + 1):
-        for combo in combinations(nonconstant, size):
+        pool = nonconstant if size == 1 else compound_pool
+        for combo in combinations(pool, size):
             combo_set = frozenset(combo)
             # 유일 단일 컬럼을 포함한 복합은 단일로 충분하다(최소성·폭발 제어).
             if size > 1 and unique_single & combo_set:
@@ -325,72 +407,61 @@ def run(
             combo_cardinality = 1
             for name in combo:
                 combo_cardinality *= cardinality[name]
-            if combo_cardinality < row_count * 0.98:
+            if combo_cardinality < row_total:
                 continue
+            if key_verified >= key_budget:
+                key_budget_hit = size
+                break
+            key_verified += 1
             if _is_unique(ctx, view, [quoted[name] for name in combo]):
                 keys.append(CandidateKey(columns=list(combo), unique=True, violation_count=0))
                 key_columns.add(combo_set)
                 if size == 1:
                     unique_single.add(combo[0])
+        if key_budget_hit is not None:
+            break
     keys.sort(key=lambda key: (len(key.columns), key.columns))
+    if key_budget_hit is not None:
+        remaining = _remaining_combinations(len(compound_pool), key_budget_hit, max_key_columns)
+        notes.append(
+            f"키 조합 예산({key_budget}) 초과 — 크기 {key_budget_hit - 1}까지 완료, "
+            f"남은 조합 약 {remaining}개"
+        )
+    # 대표 키(리드 #168): 크기 → 구성 컬럼 타입 랭크 최댓값 → 컬럼 순서.
+    # 키 좌변 FD는 대표 하나에서만 낸다.
+    representative_key = min(
+        (key for key in keys if all(name in type_by for name in key.columns)),
+        key=lambda key: (
+            len(key.columns),
+            max(_type_rank(type_by[name], position[name]) for name in key.columns),
+            [position[name] for name in key.columns],
+        ),
+        default=None,
+    )
 
-    # 동치 키(리드 결정 #164): 유일 단일 컬럼들은 서로 1-1로 결정한다. 대표
-    # (컬럼 순서상 첫 번째)만 결정자 역할을 하고, 나머지는 대표와의 상호
-    # FD만 남긴다 — 유일 컬럼마다 모든 컬럼을 결정하는 FD가 반복되지 않는다.
-    position = {name: index for index, name in enumerate(names)}
-    representative = min(unique_single, key=lambda name: position[name]) if unique_single else None
-
-    # ── 근사 함수 종속 ────────────────────────────────────────────────
-    # 같은 커트: lhs 조합 카디널리티 상한이 rhs 고유값 수의 97%에 못 미치면
-    # 위반 lhs 값이 1%를 넘는다(성립 불가능) — 쿼리하지 않는다. 단일 lhs가
-    # 이미 정확히 결정하는 우변도 빼준다(진부분집합 최소성 제거와 같은 결과).
-    # 예산은 검증한 좌변 후보 수로 잰다(결정론) — 초과하면 거기까지의 결과와
-    # 남은 후보 수를 notes에 남긴다.
-    lhs_candidates = [
-        lhs
-        for size in range(1, max_lhs + 1)
-        for lhs in combinations(nonconstant, size)
-        if size == 1 or not unique_single & set(lhs)
-    ]
-    verified = 0
-    budget_hit: int | None = None
+    # ── 근사 함수 종속(2패스) ─────────────────────────────────────────
+    # 패스 1: 단일 좌변 전부를 잰다(동치 클래스를 알기 전이라 제한 없이) —
+    # 좌변 수만큼만 쿼리한다. 카디널리티 커트: card(rhs) ≤ card(lhs) + 허용
+    # 위반 행 수(행 기준 채택의 필요조건).
+    allowed_violation_rows = fd_violation_rate * row_total
     fds: list[FunctionalDependency] = []
     exact_single: set[tuple[str, str]] = set()
-    for lhs in lhs_candidates:
-        if verified >= lhs_budget:
-            budget_hit = len(lhs)
-            break
-        lhs_set = set(lhs)
-        size = len(lhs)
-        lhs_cardinality = 1
-        for name in lhs:
-            lhs_cardinality *= cardinality[name]
-        targets = [
-            name
-            for name in rhs_pool
-            if name not in lhs_set
-            and lhs_cardinality >= cardinality[name] * 0.97
-            and (lhs[0], name) not in exact_single
-            and (lhs[-1], name) not in exact_single
-        ]
-        # 비대표 동치 키는 대표에 대한 FD만 낸다(동치 키 규칙). 대표 자신은
-        # 모든 우변을 결정자로 검사한다.
-        if (
-            size == 1
-            and representative is not None
-            and lhs[0] in unique_single
-            and lhs[0] != representative
-        ):
-            targets = [name for name in targets if name == representative]
-        if not targets:
-            continue
-        verified += 1
-        measures = _fd_measures(
-            ctx, view, [quoted[name] for name in lhs], [quoted[name] for name in targets]
-        )
+    lhs_verified = 0
+    lhs_budget_hit: int | None = None
+
+    def _adopt(
+        lhs: tuple[str, ...],
+        avg_group: float,
+        measures: dict[str, tuple[int, int, int, int]],
+        targets: list[str],
+    ) -> None:
         for name in targets:
             bad_groups, total_groups, bad_rows, rows_total = measures[quoted[name]]
-            if rows_total == 0 or bad_groups > fd_violation_rate * total_groups:
+            if rows_total == 0:
+                continue
+            if bad_rows > fd_violation_rate * rows_total:  # 채택은 행 기준
+                continue
+            if bad_groups > 0 and avg_group < MIN_AVG_GROUP:  # 근사 게이트
                 continue
             fds.append(
                 FunctionalDependency(
@@ -401,15 +472,86 @@ def run(
                     verification=VerificationScope.FULL,
                 )
             )
-            if size == 1 and bad_groups == 0:
+            if len(lhs) == 1 and bad_groups == 0:
                 exact_single.add((lhs[0], name))
-    if budget_hit is not None:
-        remaining = len(lhs_candidates) - verified
-        notes.append(
-            f"좌변 후보 예산({lhs_budget}) 초과 — 크기 {budget_hit - 1}까지 검증, "
-            f"남은 후보 {remaining}개"
+
+    for name in nonconstant:  # 패스 1: 단일 lhs
+        if lhs_verified >= lhs_budget:
+            lhs_budget_hit = 1
+            break
+        lhs_verified += 1
+        targets = [
+            rhs
+            for rhs in rhs_pool
+            if rhs != name and cardinality[rhs] <= cardinality[name] + allowed_violation_rows
+        ]
+        if not targets:
+            continue
+        avg_group, measures = _fd_measures(
+            ctx, view, [quoted[name]], [quoted[rhs] for rhs in targets]
         )
-    fds = _drop_key_lhs_transitive(_minimal_lhs(fds), unique_single)
+        _adopt((name,), avg_group, measures, targets)
+
+    # 동치 클래스(서로 정확히 결정하는 단일 컬럼)와 비대표 lhs 규칙.
+    equivalent = _equivalence_classes(fds)
+    representatives = {
+        root: min(
+            (name for name in equivalent if equivalent[name] == root),
+            key=lambda name: _type_rank(type_by[name], position[name]),
+        )
+        for root in set(equivalent.values())
+    }
+    representative_of = {name: representatives[root] for name, root in equivalent.items()}
+    fds = [
+        fd
+        for fd in fds
+        if len(fd.lhs) != 1
+        or representative_of.get(fd.lhs[0], fd.lhs[0]) == fd.lhs[0]  # 대표만 결정자
+        or fd.rhs == representative_of[fd.lhs[0]]  # 비대표는 대표와의 상호 FD만
+    ]
+
+    if lhs_budget_hit is None:  # 패스 2: 복합 좌변
+        for size in range(2, max_lhs + 1):
+            for lhs in combinations(compound_pool, size):
+                lhs_set = frozenset(lhs)
+                if unique_single & lhs_set:  # 유일 단일 포함 복합은 최소 아님
+                    continue
+                if (
+                    lhs_set in key_columns
+                    and representative_key is not None
+                    and list(lhs) != representative_key.columns
+                ):
+                    continue  # 다른 후보 키는 FD를 내지 않는다(대표만 낸다)
+                if lhs_verified >= lhs_budget:
+                    lhs_budget_hit = size
+                    break
+                lhs_cardinality = 1
+                for name in lhs:
+                    lhs_cardinality *= cardinality[name]
+                targets = [
+                    rhs
+                    for rhs in rhs_pool
+                    if rhs not in lhs_set
+                    and cardinality[rhs] <= lhs_cardinality + allowed_violation_rows
+                    and (lhs[0], rhs) not in exact_single
+                    and (lhs[-1], rhs) not in exact_single
+                ]
+                if not targets:
+                    continue
+                lhs_verified += 1
+                avg_group, measures = _fd_measures(
+                    ctx, view, [quoted[name] for name in lhs], [quoted[rhs] for rhs in targets]
+                )
+                _adopt(lhs, avg_group, measures, targets)
+            if lhs_budget_hit is not None:
+                break
+    if lhs_budget_hit is not None:
+        remaining = _remaining_combinations(len(compound_pool), lhs_budget_hit, max_lhs)
+        notes.append(
+            f"좌변 후보 예산({lhs_budget}) 초과 — 크기 {lhs_budget_hit - 1}까지 검증, "
+            f"남은 후보 약 {remaining}개"
+        )
+    fds = _drop_transitive(_minimal_lhs(fds), equivalent)
     fds.sort(key=lambda fd: (len(fd.lhs), fd.lhs, fd.rhs))
     notes.append("상호정보량·파생 컬럼·계층 구조는 이번 범위 밖이다(빈 목록)")
 
@@ -417,13 +559,13 @@ def run(
     numeric = sorted(
         name
         for name in names
-        if type_by[name].physical_type in NUMERIC_TYPES and profile_by[name].unique_count > 1
+        if type_by[name].physical_type in NUMERIC_TYPES and cardinality[name] > 1
     )
     categoric = sorted(
         name
         for name in names
         if type_by[name].physical_type in CATEGORY_TYPES
-        and 1 < profile_by[name].unique_count <= category_cardinality_limit
+        and 1 < cardinality[name] <= category_cardinality_limit
     )
     correlations = _correlations(ctx, view, quoted, numeric, categoric)
 

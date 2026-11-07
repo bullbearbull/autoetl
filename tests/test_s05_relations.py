@@ -73,6 +73,14 @@ def test_truth_fds_all_found(
     assert not missing, f"못 찾은 정답 FD(컬럼 ID): {sorted(missing)}"
 
 
+# ── 리드 검토(#168): FD 정밀도 ────────────────────────────────────────
+# 목표(모든 변형 0.5 이상)는 재검토 대기다 — 정확히 성립하는 우연 복합 좌변의
+# FD(orders_kr clean 잡음 73개 중 63개가 좌변 크기 2)는 평균 그룹 크기 게이트가
+# 근사에만 작동해 남는다. 재현율 1.0은 위 테스트가 지키고, 정밀도 측정값과
+# 원인은 PR 표로 리드 판단을 받는다(리드 안내: 미달 변형은 원인 기재 후
+# 판단 보류).
+
+
 # ── 완료 기준: 리프 테이블 PK가 후보 키로 나온다 ────────────────────────
 
 
@@ -261,3 +269,49 @@ def test_cramers_v_dependent_beats_independent(tmp_path: Path) -> None:
     assert any(
         c.method is CorrelationMethod.CRAMERS_V and c.value < 0.5 for c in graph2.correlations
     )
+
+
+# ── 리드 검토(#168) 재현 — 잡동사니 그룹·정규화 실패·동률 순위·키 예산 ────
+
+
+def test_junk_group_fd_not_adopted_by_row_ratio(tmp_path: Path) -> None:
+    # 리드 재현: 고객 5행씩 + '미상'(customer_id=0) 200행에 이메일 30종 —
+    # 그룹 기준 support 0.999라도 위반 행 200/5,200(3.8%)이라 채택하지
+    # 않는다(채택은 행 기준).
+    rows = []
+    for i in range(1, 1001):
+        for _ in range(5):
+            rows.append(f"{i},user{i}@ex.io")
+    for i in range(200):
+        rows.append(f"0,unknown{i % 30}@ex.io")
+    graph = _run_s5(tmp_path, "junk", "customer_id,email", rows)
+    assert not any(
+        fd.lhs == ["customer_id"] and fd.rhs == "email" for fd in graph.functional_dependencies
+    )
+
+
+def test_normalization_failure_column_not_key(tmp_path: Path) -> None:
+    # 리드 재현: 정수 id 600행에 '12a' 1값 — 원문 결측은 아니지만 정규화 뷰에서
+    # NULL이므로 결측 컬럼으로 본다. id는 키가 되지 않고 notes에 남는다.
+    rows = [str(i) for i in range(1, 601)]
+    rows[10] = "12a"
+    graph = _run_s5(tmp_path, "norm_fail", "id", rows)
+    assert graph.candidate_keys == []
+    assert any("결측이 있는 컬럼" in note and "id" in note for note in graph.notes)
+
+
+def test_spearman_uses_average_ranks(tmp_path: Path) -> None:
+    # 리드 재현: x = [1,1,2,3,4,4,5], y = [1..7] — RANK()의 최소 순위(0.9754)가
+    # 아니라 동률 평균 순위의 참값 0.9820이 나온다.
+    rows = ["1,1", "1,2", "2,3", "3,4", "4,5", "4,6", "5,7"]
+    graph = _run_s5(tmp_path, "spear_tie", "x,y", rows)
+    spearman = next(c.value for c in graph.correlations if c.method is CorrelationMethod.SPEARMAN)
+    assert spearman == pytest.approx(0.9820, abs=5e-5)  # 리드 참값 표기(4자리)
+
+
+def test_key_budget_stops_search(tmp_path: Path) -> None:
+    # 키 탐색도 작업량 예산(검증 조합 수)을 센다 — 초과하면 완료 크기와 남은
+    # 조합 수를 notes에 남긴다.
+    rows = [f"{i % 7},{i % 5},{i % 3},{i % 11}" for i in range(1, 201)]
+    graph = _run_s5(tmp_path, "key_budget", "a,b,c,d", rows, key_budget=1)
+    assert any("키 조합 예산(1) 초과" in note for note in graph.notes)
