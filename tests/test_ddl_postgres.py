@@ -18,6 +18,7 @@ from autoetl.contracts import (
     OutlierMethod,
     OutlierSummary,
     PhysicalType,
+    SamplingPlan,
     SchemaCandidate,
     SchemaPattern,
     StatsKind,
@@ -27,6 +28,11 @@ from autoetl.contracts import (
 from autoetl.core.ddl import postgres as pg
 
 DOC = Path(__file__).resolve().parent.parent / "docs" / "ddl-postgres.md"
+
+FULL = SamplingPlan(strategy="full", total_rows=100, rationale="테스트 전수")
+SAMPLE = SamplingPlan(
+    strategy="sample", total_rows=5_000_000, sample_rows=500, seed=42, rationale="테스트 표본"
+)
 
 
 def _column(
@@ -113,6 +119,7 @@ def test_all_physical_types_roundtrip() -> None:
         candidate,
         profiles=[p for p in observations.values() if isinstance(p, ColumnProfile)],
         stats=[s for s in observations.values() if isinstance(s, ColumnStats)],
+        sampling=FULL,  # 관측 한도는 전수일 때만 반영된다
     )
     summaries = pg.verify_ddl(ddl, candidate)
     assert summaries == [
@@ -231,24 +238,53 @@ def test_contract_rejects_dangerous_names() -> None:
 
 
 def test_identifier_quoting_blocks_injection() -> None:
-    # 계약 밖 경로 방어: 식별자 인용이 임의 문자열을 안전하게 감싼다 —
-    # 세미콜론·주석이 들어 있어도 재파싱하면 문장 1개·이름이 그대로다.
-    evil = 'x"; DROP TABLE t; --'
-    create = exp.Create(
-        this=exp.Schema(
-            this=exp.Table(this=pg._quoted(evil)),
-            expressions=[
-                exp.ColumnDef(this=pg._quoted_column(evil), kind=exp.DataType.build("INTEGER"))
-            ],
-        ),
-        kind="TABLE",
+    # 계약 밖 경로 방어(완료 기준: '생성 DDL을 파싱하면'): 계약 검사를 건너뛴
+    # 후보(model_construct)로 generate_ddl을 돌려 재파싱으로 단정한다.
+    # 세미콜론·주석·작은따옴표·역슬래시·공백·한글·예약어가 들어 있어도
+    # 문장 수와 이름이 그대로다(추가 구문이 끼어들 수 없다).
+    names = [
+        'x"; DROP TABLE t; --',  # 따옴표·세미콜론·주석
+        "a b",  # 공백
+        "고객" * 30,  # 한글 90바이트(UTF-8) — 63 초과 축소
+        "order",  # 예약어
+        "user",
+        "select",
+        "it's",  # 작은따옴표
+        "back\\slash",  # 역슬래시
+    ]
+    columns = [
+        TargetColumn.model_construct(
+            name=name,
+            physical_type=PhysicalType.INTEGER,
+            precision=None,
+            scale=None,
+            source_columns=[name],
+            nullable=True,
+            is_primary_key=False,
+            foreign_key=None,
+            description="",
+        )
+        for name in names
+    ]
+    table = TargetTable.model_construct(name="order", columns=columns)
+    candidate = SchemaCandidate(
+        id="C1", pattern=SchemaPattern.THIRD_NORMAL_FORM, tables=[table], rationale="주입 시험"
     )
-    ddl = create.sql(dialect="postgres", identify=True)
+    evil_schema = 's"; DROP SCHEMA z; --'
+    ddl = pg.generate_ddl(candidate, schema=evil_schema)
     statements = [s for s in sqlglot_parse(ddl, read="postgres") if s is not None]
-    assert len(statements) == 1
-    assert isinstance(statements[0], exp.Create)
-    assert statements[0].this.this.name == evil
-    assert statements[0].this.expressions[0].name == evil
+    assert len(statements) == 1  # 문장 1개 — 추가 구문 없음(주입 불가)
+    create = statements[0]
+    assert isinstance(create, exp.Create)
+    assert create.this.this.db == evil_schema  # 스키마 이름도 보존
+    assert create.this.this.name == "order"
+    column_defs = create.this.expressions
+    assert len(column_defs) == len(names)
+    safe = pg._identifier_map(names)
+    for column_def, name in zip(column_defs, names, strict=True):
+        assert column_def.name == safe[name]  # 이름 보존(축소 맵 포함)
+        assert len(column_def.name.encode("utf-8")) <= 63
+    pg.verify_ddl(ddl, candidate, schema=evil_schema)  # 전수 대조도 통과
 
 
 # ── 완료 기준: 매핑 문서 표와 코드 일치 ──────────────────────────────────
@@ -295,16 +331,20 @@ def test_same_candidate_yields_same_bytes() -> None:
 
 
 def test_integer_range_selects_type() -> None:
-    def ddl_for(stat: ColumnStats | None) -> str:
+    def ddl_for(stat: ColumnStats | None, sampling: SamplingPlan | None) -> str:
         candidate = _candidate(TargetTable(name="t", columns=[_column("n", PhysicalType.INTEGER)]))
         if stat is None:
-            return pg.generate_ddl(candidate)
-        return pg.generate_ddl(candidate, stats=[stat])
+            return pg.generate_ddl(candidate, sampling=sampling)
+        return pg.generate_ddl(candidate, stats=[stat], sampling=sampling)
 
-    assert '"n" INT' in ddl_for(_stat("n", -2147483648, 2147483647))  # int4 안
-    assert "BIGINT" in ddl_for(_stat("n", 0, 2147483648))  # 경계 초과
-    assert "BIGINT" in ddl_for(_stat("n", -2147483649, 0))
-    assert "BIGINT" in ddl_for(None)  # 범위 미상 — 안전 쪽
+    in_range = _stat("n", -2147483648, 2147483647)
+    assert '"n" INT' in ddl_for(in_range, FULL)  # 전수 관측 — int4 안
+    assert "BIGINT" in ddl_for(_stat("n", 0, 2147483648), FULL)  # 경계 초과
+    assert "BIGINT" in ddl_for(_stat("n", -2147483649, 0), FULL)
+    assert "BIGINT" in ddl_for(None, FULL)  # 범위 미상 — 안전 쪽
+    # 표본 관측·계획 없음은 한도에 쓰지 않는다(표본 최댓값 < 전수 최댓값 가능)
+    assert "BIGINT" in ddl_for(in_range, SAMPLE)
+    assert "BIGINT" in ddl_for(in_range, None)
 
 
 def test_decimal_precision_rules() -> None:
@@ -318,22 +358,28 @@ def test_decimal_precision_rules() -> None:
             )
         )
 
-    assert "DECIMAL(14, 3)" in ddl_for(12, 2)  # 여유 +2/+1
+    assert "DECIMAL(12, 3)" in ddl_for(10, 2)  # 여유 +2/+1
+    assert "DECIMAL(14, 3)" in ddl_for(12, 2)
     assert re.search(r"\bDECIMAL\b(?!\()", ddl_for(None, 3))  # precision 미상 — 무제한
-    assert "DECIMAL(38, 38)" in ddl_for(38, 37)  # 상한 38 클램프·scale ≤ precision
-    assert "DECIMAL(38, 6)" in ddl_for(38, 5)
+    # 상한 38에 걸리면 scale 여유를 포기해 정수부 자릿수(p-s)·scale을 지킨다
+    assert "DECIMAL(38, 10)" in ddl_for(38, 10)
+    assert "DECIMAL(38, 37)" in ddl_for(38, 37)  # (38, 38) 정수부 0자리 방지
+    assert "DECIMAL(38, 11)" in ddl_for(37, 10)  # 상한에 안 걸리면 여유가 들어간다
 
 
 def test_string_length_rules() -> None:
-    def ddl_for(maximum: int | None) -> str:
+    def ddl_for(maximum: int | None, sampling: SamplingPlan | None) -> str:
         candidate = _candidate(TargetTable(name="t", columns=[_column("s", PhysicalType.STRING)]))
         if maximum is None:
-            return pg.generate_ddl(candidate)
-        return pg.generate_ddl(candidate, profiles=[_profile("s", maximum)])
+            return pg.generate_ddl(candidate, sampling=sampling)
+        return pg.generate_ddl(candidate, profiles=[_profile("s", maximum)], sampling=sampling)
 
-    assert "VARCHAR(30)" in ddl_for(10)  # 관측 최대 + 20
-    assert "TEXT" in ddl_for(None)  # 길이 미상
-    assert "TEXT" in ddl_for(pg.VARCHAR_TEXT_LIMIT)  # varchar 상한 초과
+    assert "VARCHAR(30)" in ddl_for(10, FULL)  # 전수 관측 최대 + 20
+    assert "TEXT" in ddl_for(None, FULL)  # 길이 미상
+    assert "TEXT" in ddl_for(pg.VARCHAR_TEXT_LIMIT, FULL)  # varchar 상한 초과
+    # 표본 관측·계획 없음 — 표본 최댓값을 한도로 쓰면 적재가 깨진다
+    assert "TEXT" in ddl_for(10, SAMPLE)
+    assert "TEXT" in ddl_for(10, None)
 
 
 # ── 실패 닫힘: FK 지정·순환·중복·축소 충돌 ───────────────────────────────
@@ -372,6 +418,110 @@ def test_fk_cycle_and_unknown_parent_raise() -> None:
         pg.generate_ddl(_candidate(orphan))
 
 
+def test_independent_fks_to_same_parent_stay_separate() -> None:
+    # 홈·원정 팀처럼 같은 부모를 향하는 독립 FK는 복합으로 묶이면 성립하지
+    # 않는다(FOREIGN KEY (home, away) REFERENCES team(team_id, team_id)) —
+    # 단일 PK 부모는 자식 컬럼마다 FK를 따로 낸다.
+    teams = TargetTable(
+        name="teams",
+        columns=[_column("team_id", PhysicalType.INTEGER, nullable=False, is_primary_key=True)],
+    )
+    games = TargetTable(
+        name="games",
+        columns=[
+            _column("game_id", PhysicalType.INTEGER, nullable=False, is_primary_key=True),
+            _column("home_team_id", PhysicalType.INTEGER, foreign_key="teams(team_id)"),
+            _column("away_team_id", PhysicalType.INTEGER, foreign_key="teams(team_id)"),
+        ],
+    )
+    candidate = _candidate(teams, games)
+    ddl = pg.generate_ddl(candidate)
+    assert ddl.count("FOREIGN KEY") == 2  # 독립 FK 2개
+    assert 'FOREIGN KEY ("home_team_id") REFERENCES "teams"("team_id")' in ddl
+    assert 'FOREIGN KEY ("away_team_id") REFERENCES "teams"("team_id")' in ddl
+    summaries = pg.verify_ddl(ddl, candidate)
+    assert [summary["foreign_keys"] for summary in summaries] == [0, 2]
+
+
+def test_fk_reference_rules_are_enforced() -> None:
+    def generate(child: TargetColumn, *parent_columns: TargetColumn) -> str:
+        parent = TargetTable(name="parent", columns=list(parent_columns))
+        child_table = TargetTable(name="child", columns=[child])
+        return pg.generate_ddl(_candidate(parent, child_table))
+
+    pk = _column("pid", PhysicalType.INTEGER, nullable=False, is_primary_key=True)
+    # 비PK 참조 — UNIQUE 제약을 만들지 않아 FK가 성립하지 않는다
+    with pytest.raises(ValueError, match="부모 PK가 아니다"):
+        generate(
+            _column("ref", PhysicalType.INTEGER, foreign_key="parent(name)"),
+            pk,
+            _column("name", PhysicalType.STRING),
+        )
+    # 없는 컬럼 참조
+    with pytest.raises(ValueError, match="부모에 없다"):
+        generate(_column("ref", PhysicalType.INTEGER, foreign_key="parent(ghost)"), pk)
+    # 자식·부모 물리 타입 불일치
+    with pytest.raises(ValueError, match="타입 불일치"):
+        generate(_column("ref", PhysicalType.STRING, foreign_key="parent(pid)"), pk)
+    # 복합 PK 부모를 일부만(겹쳐서) 가리킴
+    with pytest.raises(ValueError, match="한 번씩 가리키지 않는다"):
+        parent = TargetTable(
+            name="parent",
+            columns=[
+                _column("a", PhysicalType.INTEGER, nullable=False, is_primary_key=True),
+                _column("b", PhysicalType.INTEGER, nullable=False, is_primary_key=True),
+            ],
+        )
+        child = TargetTable(
+            name="child",
+            columns=[
+                _column("x", PhysicalType.INTEGER, foreign_key="parent(a)"),
+                _column("y", PhysicalType.INTEGER, foreign_key="parent(a)"),  # b가 빠지고 a가 겹침
+            ],
+        )
+        pg.generate_ddl(_candidate(parent, child))
+
+
+def test_fk_child_column_uses_parent_type() -> None:
+    # 부모·자식이 각자 관측값으로 타입을 정하면 INT·BIGINT가 섞인다 —
+    # FK 자식 컬럼은 부모 컬럼과 같은 PostgreSQL 타입으로 낸다.
+    teams = TargetTable(
+        name="teams",
+        columns=[_column("team_id", PhysicalType.INTEGER, nullable=False, is_primary_key=True)],
+    )
+    games = TargetTable(
+        name="games",
+        columns=[
+            _column("game_id", PhysicalType.INTEGER, nullable=False, is_primary_key=True),
+            _column("home_team_id", PhysicalType.INTEGER, foreign_key="teams(team_id)"),
+        ],
+    )
+    ddl = pg.generate_ddl(
+        _candidate(teams, games),
+        stats=[_stat("team_id", 0, 3_000_000_000), _stat("home_team_id", 0, 100)],  # 부모만 int4 밖
+        sampling=FULL,
+    )
+    assert '"team_id" BIGINT' in ddl
+    assert '"home_team_id" BIGINT' in ddl  # 자식 관측(int4 안)과 무관
+
+
+def test_verify_ddl_checks_not_null() -> None:
+    table = TargetTable(
+        name="t",
+        columns=[
+            _column("id", PhysicalType.INTEGER, nullable=False, is_primary_key=True),
+            _column("label", PhysicalType.STRING, nullable=False),
+        ],
+    )
+    candidate = _candidate(table)
+    ddl = pg.generate_ddl(candidate)
+    pg.verify_ddl(ddl, candidate)  # 원본은 통과
+    # NOT NULL을 지운 DDL은 대조에서 걸린다(PK는 PostgreSQL이 암묵 NOT NULL)
+    tampered = ddl.replace('"label" TEXT NOT NULL', '"label" TEXT')
+    with pytest.raises(ValueError, match="NOT NULL 불일치"):
+        pg.verify_ddl(tampered, candidate)
+
+
 def test_duplicate_column_raises() -> None:
     dup = TargetTable(
         name="t",
@@ -396,9 +546,22 @@ def test_shorten_collision_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_schema_qualification() -> None:
-    candidate = _candidate(
-        TargetTable(name="t", columns=[_column("id", PhysicalType.INTEGER, is_primary_key=True)])
+    parents = TargetTable(
+        name="parents",
+        columns=[_column("id", PhysicalType.INTEGER, nullable=False, is_primary_key=True)],
     )
+    children = TargetTable(
+        name="children",
+        columns=[
+            _column("id", PhysicalType.INTEGER, nullable=False, is_primary_key=True),
+            _column("parent_id", PhysicalType.INTEGER, nullable=False, foreign_key="parents(id)"),
+        ],
+    )
+    candidate = _candidate(children, parents)
     ddl = pg.generate_ddl(candidate, schema="analytics")
-    assert '"analytics"."t"' in ddl
+    assert '"analytics"."parents"' in ddl
+    # REFERENCES도 같은 스키마로 한정한다 — 스키마 없는 이름은 search_path로
+    # 풀려 다른 테이블에 붙는다.
+    assert 'REFERENCES "analytics"."parents"("id")' in ddl
+    assert 'REFERENCES "parents"' not in ddl
     pg.verify_ddl(ddl, candidate, schema="analytics")

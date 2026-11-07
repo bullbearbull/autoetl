@@ -8,7 +8,10 @@ sqlglot 표현식 트리로 CREATE TABLE을 만든다(리드 결정). 문자열 
 타입 매핑·여유 값은 docs/ddl-postgres.md의 표와 1:1로 일치해야 한다 —
 표와 코드가 어긋나면 테스트가 실패한다. 정적 매핑(BOOLEAN·DATE 등)은
 TYPE_MAP에, 관측값이 필요한 매핑(integer 범위·decimal 정밀도·varchar 길이)은
-_postgres_type이 profile·stats에서 계산한다.
+_postgres_type이 profile·stats에서 계산한다. 관측 한도는 SamplingPlan이
+전수(full)일 때만 쓴다(표본 최댓값은 전수보다 작을 수 있다). FK는 참조 대상이
+부모의 PK여야 성립한다 — 단일 PK 부모는 자식 컬럼마다 FK를 따로, 복합 PK
+부모는 PK 전부를 한 번씩 가리킬 때만 하나의 복합 FK로 묶는다.
 
 같은 후보·프로파일·통계면 같은 DDL 바이트를 낸다(정렬·이름 축소 모두
 결정론적 — 해시 접미는 sha256).
@@ -27,6 +30,7 @@ from autoetl.contracts import (
     ColumnProfile,
     ColumnStats,
     PhysicalType,
+    SamplingPlan,
     SchemaCandidate,
     TargetColumn,
     TargetTable,
@@ -136,25 +140,52 @@ def _parse_foreign_key(spec: str) -> tuple[str, str]:
 
 def _fk_references(
     table: TargetTable,
+    parents: dict[str, TargetTable],
 ) -> list[tuple[list[str], str, list[str]]]:
     """테이블의 FK를 (자식 컬럼들, 참조 테이블, 참조 컬럼들) 목록으로.
 
-    같은 부모 테이블을 참조하는 컬럼들은 하나의 복합 FOREIGN KEY로 묶는다 —
-    자식 컬럼 순서(테이블 정의 순)와 참조 컬럼 순서를 짝 맞춘다. 계약의 FK
-    지정은 컬럼 단위라 두 독립 FK가 같은 부모를 향하는 경우까지 구별하지
-    못한다(표현력 한계, 검토 포인트).
+    참조 대상은 부모의 PK여야 한다(이 생성기는 UNIQUE 제약을 만들지
+    않는다 — PK가 아니면 PostgreSQL에서 FK가 성립하지 않는다). 부모 PK가
+    단일 컬럼이면 자식 컬럼마다 FK를 따로 낸다 — 홈·원정 팀처럼 같은 부모를
+    향하는 독립 FK를 하나의 복합 FK로 묶으면 성립하지 않는다. 부모 PK가
+    복합이면 PK 컬럼 전부를 한 번씩 가리킬 때만 복합 FK 하나로 묶는다(자식
+    컬럼 순서 = 테이블 정의 순서). 빠지거나 겹치면 실패 닫힘 — 계약의 FK
+    지정은 컬럼 단위라 그 뜻을 알 수 없다. 자식과 부모의 물리 타입이 다르면
+    실패 닫힘이다(성립하지 않는 FK를 만들지 않는다).
     """
     grouped: dict[str, list[tuple[str, str]]] = {}
     for column in table.columns:
         if column.foreign_key is None:
             continue
         parent_name, parent_column = _parse_foreign_key(column.foreign_key)
+        parent_table = parents.get(parent_name)
+        if parent_table is None:
+            raise ValueError(f"FK 참조 대상이 후보에 없다: {table.name} → {parent_name}")
+        parent_by_name = {c.name: c for c in parent_table.columns}
+        target = parent_by_name.get(parent_column)
+        if target is None:
+            raise ValueError(f"FK 참조 컬럼이 부모에 없다: {parent_name}({parent_column})")
+        if not target.is_primary_key:
+            raise ValueError(f"FK 참조 컬럼이 부모 PK가 아니다: {parent_name}({parent_column})")
+        if column.physical_type != target.physical_type:
+            raise ValueError(
+                f"FK 타입 불일치: {table.name}({column.name})은 "
+                f"{parent_name}({parent_column})과 물리 타입이 다르다"
+            )
         grouped.setdefault(parent_name, []).append((column.name, parent_column))
     references: list[tuple[list[str], str, list[str]]] = []
     for parent, pairs in grouped.items():
-        child_columns = [child for child, _ in pairs]
-        parent_columns = [parent_column for _, parent_column in pairs]
-        references.append((child_columns, parent, parent_columns))
+        parent_pk = [c.name for c in parents[parent].columns if c.is_primary_key]
+        if len(parent_pk) == 1:
+            for child, parent_column in pairs:  # 독립 FK — 묶지 않는다
+                references.append(([child], parent, [parent_column]))
+        elif sorted(pc for _, pc in pairs) == sorted(parent_pk):
+            references.append(([child for child, _ in pairs], parent, [pc for _, pc in pairs]))
+        else:
+            raise ValueError(
+                f"복합 FK가 부모 PK 전부를 한 번씩 가리키지 않는다: "
+                f"{table.name} → {parent} PK {parent_pk}"
+            )
     return references
 
 
@@ -162,20 +193,29 @@ def _postgres_type(
     column: TargetColumn,
     length_max: int | None,
     numeric_range: tuple[float, float] | None,
+    *,
+    full_scan: bool,
 ) -> exp.DataType:
     """물리 타입 → PostgreSQL 타입(동적 3종은 관측값으로 정한다).
 
-    - integer: 관측 범위가 int4 안이면 INT, 벗어나거나 범위 미상이면
-      BIGINT(안전 쪽 — 데이터 손실 없음).
-    - decimal: precision+2·scale+1 여유의 NUMERIC(p, s). precision이 없으면
-      무제한 NUMERIC(정밀도를 모르는데 자릿수를 정하는 것보다 낫다).
-    - string: 관측 최대 길이+20의 VARCHAR(n). 길이를 모르거나 상한을 넘으면
-      TEXT.
+    관측 한도는 전수일 때만 쓴다 — 표본 최댓값은 전수 최댓값보다 작을 수
+    있어 VARCHAR(n)·INT 한도로 쓰면 적재가 깨진다(T-0025 '표본은 판정에만
+    쓴다'와 같은 규칙).
+
+    - integer: 전수 관측 범위가 int4 안이면 INT, 벗어나거나 범위 미상이거나
+      관측이 표본이면 BIGINT(안전 쪽 — 데이터 손실 없음).
+    - decimal: precision+2·scale+1 여유의 NUMERIC(p, s). 상한 38에 걸리면
+      scale 여유를 먼저 포기해 정수부 자릿수(p-s)와 scale이 원래 값보다
+      줄지 않게 한다(줄면 관측값이 적재 때 넘친다). precision이 없으면 무제한
+      NUMERIC(정밀도를 모르는데 자릿수를 정하는 것보다 낫다).
+    - string: 전수 관측 최대 길이+20의 VARCHAR(n). 관측이 표본이거나 길이를
+      모르거나 상한을 넘으면 TEXT.
     """
     kind = column.physical_type
     if kind is PhysicalType.INTEGER:
         if (
-            numeric_range is not None
+            full_scan
+            and numeric_range is not None
             and numeric_range[0] >= INT4_MIN
             and numeric_range[1] <= INT4_MAX
         ):
@@ -186,10 +226,17 @@ def _postgres_type(
             return exp.DataType.build("NUMERIC", dialect="postgres")
         precision = min(column.precision + NUMERIC_PRECISION_MARGIN, NUMERIC_LIMIT)
         scale = column.scale or 0
-        scale = min(scale + NUMERIC_SCALE_MARGIN, precision)
+        # 정수부 자릿수(precision-scale)는 여유보다 먼저 지킨다 — 상한에
+        # 걸리면 scale 여유를 포기한다((38, 37)이 (38, 38) 정수부 0자리가
+        # 되는 것 방지).
+        scale = min(
+            scale + NUMERIC_SCALE_MARGIN,
+            precision - (column.precision - scale),
+            precision,
+        )
         return exp.DataType.build(f"NUMERIC({precision}, {scale})", dialect="postgres")
     if kind is PhysicalType.STRING:
-        if length_max is None or length_max + VARCHAR_MARGIN > VARCHAR_TEXT_LIMIT:
+        if not full_scan or length_max is None or length_max + VARCHAR_MARGIN > VARCHAR_TEXT_LIMIT:
             return exp.DataType.build("TEXT", dialect="postgres")
         return exp.DataType.build(f"VARCHAR({length_max + VARCHAR_MARGIN})", dialect="postgres")
     return exp.DataType.build(TYPE_MAP[kind], dialect="postgres")
@@ -208,15 +255,11 @@ def _topological_tables(tables: Sequence[TargetTable]) -> list[TargetTable]:
     depends: dict[str, set[str]] = {
         table.name: {
             parent
-            for _, parent, _ in _fk_references(table)
+            for _, parent, _ in _fk_references(table, by_name)
             if parent != table.name  # 자기 참조는 순서와 무관
         }
         for table in tables
     }
-    for table in tables:
-        for parent in depends[table.name]:
-            if parent not in by_name:
-                raise ValueError(f"FK 참조 대상이 후보에 없다: {table.name} → {parent}")
     ordered: list[TargetTable] = []
     done: set[str] = set()
     remaining = sorted(tables, key=lambda table: table.name)
@@ -237,14 +280,18 @@ def generate_ddl(
     *,
     profiles: Sequence[ColumnProfile] = (),
     stats: Sequence[ColumnStats] = (),
+    sampling: SamplingPlan | None = None,
     schema: str | None = None,
 ) -> str:
     """후보 스키마 → PostgreSQL CREATE TABLE 문(세미콜론·줄바꿈 구분).
 
     profiles·stats는 관측 기반 타입 매핑(string 길이·integer 범위)에만 쓴다.
+    관측 한도는 SamplingPlan이 전수(full)일 때만 반영한다(표본이거나 계획이
+    없으면 TEXT·BIGINT — 표본 최댓값을 한도로 쓰면 적재가 깨진다).
     TargetColumn.source_columns의 첫 컬럼(단일 원본) 기준으로 찾는다. 같은
     후보·프로파일·통계면 같은 바이트를 낸다.
     """
+    full_scan = sampling is not None and sampling.strategy == "full"
     length_by_source = {profile.column: profile.length.maximum for profile in profiles}
     range_by_source: dict[str, tuple[float, float]] = {}
     for stat in stats:
@@ -252,11 +299,23 @@ def generate_ddl(
             range_by_source[stat.column] = (stat.numeric.minimum, stat.numeric.maximum)
 
     tables = _topological_tables(candidate.tables)
+    parents = {table.name: table for table in tables}
+    # 컬럼별 PostgreSQL 타입 — FK 자식 컬럼은 부모 컬럼과 같은 타입으로 낸다.
+    type_by_key: dict[tuple[str, str], exp.DataType] = {}
+    for table in tables:
+        for column in table.columns:
+            source = column.source_columns[0]
+            type_by_key[(table.name, column.name)] = _postgres_type(
+                column,
+                length_by_source.get(source),
+                range_by_source.get(source),
+                full_scan=full_scan,
+            )
     # 식별자 안전 맵: 테이블(스키마 포함)·컬럼 전부에서 유일해야 한다.
     all_names: list[str] = [table.name for table in tables]
     for table in tables:
         all_names.extend(column.name for column in table.columns)
-        for _, parent, parent_columns in _fk_references(table):
+        for _, parent, parent_columns in _fk_references(table, parents):
             all_names.append(parent)
             all_names.extend(parent_columns)
     if schema is not None and len(schema.encode("utf-8")) > MAX_IDENTIFIER_BYTES:
@@ -271,16 +330,17 @@ def generate_ddl(
             if column.name in seen_columns:
                 raise ValueError(f"테이블 {table.name}에 같은 이름의 컬럼이 있다: {column.name}")
             seen_columns.add(column.name)
-            source = column.source_columns[0]
+            kind = type_by_key[(table.name, column.name)]
+            if column.foreign_key is not None:  # 부모와 같은 타입(관측이 섞이지 않게)
+                parent_name, parent_column = _parse_foreign_key(column.foreign_key)
+                kind = type_by_key[(parent_name, parent_column)]
             constraints = []
             if not column.nullable:
                 constraints.append(exp.NotNullColumnConstraint())
             column_defs.append(
                 exp.ColumnDef(
                     this=_quoted_column(safe[column.name]),
-                    kind=_postgres_type(
-                        column, length_by_source.get(source), range_by_source.get(source)
-                    ),
+                    kind=kind,
                     constraints=constraints,
                 )
             )
@@ -289,12 +349,15 @@ def generate_ddl(
             column_defs.append(
                 exp.PrimaryKey(expressions=[_quoted_column(safe[name]) for name in pk_columns])
             )
-        for child_columns, parent, parent_columns in _fk_references(table):
+        for child_columns, parent, parent_columns in _fk_references(table, parents):
+            reference_table = exp.Table(this=_quoted(safe[parent]))
+            if schema is not None:  # 참조도 같은 스키마로 한정(search_path 오남용 방지)
+                reference_table = exp.Table(this=reference_table.this, db=_quoted(schema))
             column_defs.append(
                 exp.ForeignKey(
                     expressions=[_quoted_column(safe[name]) for name in child_columns],
                     reference=exp.Reference(
-                        this=exp.Table(this=_quoted(safe[parent])),
+                        this=reference_table,
                         expressions=[_quoted_column(safe[name]) for name in parent_columns],
                     ),
                 )
@@ -316,15 +379,17 @@ def verify_ddl(
     """생성한 DDL을 sqlglot으로 다시 파싱해 후보와 대조한다(실패 닫힘).
 
     문장 수(테이블 수), 테이블·컬럼 이름(축소 맵 적용), PK 컬럼, FK(자식 →
-    참조)이 하나라도 어긋나면 ValueError. 통과하면 테이블별 요약을 돌려준다
-    (S10 검증이 쓴다).
+    참조, 스키마 한정 포함), 컬럼별 NOT NULL이 하나라도 어긋나면 ValueError.
+    PK 컬럼은 PostgreSQL이 NOT NULL로 다루므로 명시 여부는 물지 않는다.
+    통과하면 테이블별 요약을 돌려준다(S10 검증이 쓴다).
     """
     statements = [stmt for stmt in sqlglot_parse(ddl, read="postgres") if stmt is not None]
     expected_tables = _topological_tables(candidate.tables)
+    parents = {table.name: table for table in expected_tables}
     all_names: list[str] = [table.name for table in expected_tables]
     for table in expected_tables:
         all_names.extend(column.name for column in table.columns)
-        for _, parent, parent_columns in _fk_references(table):
+        for _, parent, parent_columns in _fk_references(table, parents):
             all_names.append(parent)
             all_names.extend(parent_columns)
     safe = _identifier_map(all_names)
@@ -350,6 +415,15 @@ def verify_ddl(
         actual_columns = [column_def.name for column_def in column_defs]
         if actual_columns != expected_columns:
             raise ValueError(f"컬럼 불일치({table.name}): {actual_columns} vs {expected_columns}")
+        for column, column_def in zip(table.columns, column_defs, strict=True):
+            if column.is_primary_key:
+                continue  # PK는 PostgreSQL이 NOT NULL로 다룬다(명시 여부 자유)
+            actual_not_null = column_def.find(exp.NotNullColumnConstraint) is not None
+            if actual_not_null != (not column.nullable):
+                raise ValueError(
+                    f"NOT NULL 불일치({table.name}.{column_def.name}): "
+                    f"{'있음' if actual_not_null else '없음'} vs nullable={column.nullable}"
+                )
         pk = next((e for e in create_schema.expressions if isinstance(e, exp.PrimaryKey)), None)
         expected_pk = [safe[c.name] for c in table.columns if c.is_primary_key]
         actual_pk = [c.name for c in pk.expressions] if pk is not None else []
@@ -361,10 +435,13 @@ def verify_ddl(
                 continue
             reference = e.args["reference"]
             parent_schema = reference.this
+            parent_table = parent_schema.this
+            if schema is not None and parent_table.db != schema:
+                raise ValueError(f"FK 스키마 한정 불일치: {parent_table.db!r} vs {schema!r}")
             actual_fks.append(
                 (
                     [c.name for c in e.expressions],
-                    parent_schema.this.name,
+                    parent_table.name,
                     [c.name for c in parent_schema.expressions],
                 )
             )
@@ -374,7 +451,7 @@ def verify_ddl(
                 safe[parent],
                 [safe[name] for name in parent_columns],
             )
-            for child_columns, parent, parent_columns in _fk_references(table)
+            for child_columns, parent, parent_columns in _fk_references(table, parents)
         ]
         if sorted(actual_fks) != sorted(expected_fks):
             raise ValueError(f"FK 불일치({table.name}): {actual_fks} vs {expected_fks}")
