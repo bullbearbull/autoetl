@@ -132,6 +132,11 @@
           "minimum": 0,
           "title": "Violation Count",
           "type": "integer"
+        },
+        "verification": {
+          "$ref": "#/$defs/VerificationScope",
+          "default": "sample",
+          "description": "기본은 sample — 전수로 확정한 코드만 full로 적는다(확인하지 않은 것을 전수로 주장하지 않는다). S9·SOP 재검증 큐가 기계적으로 읽는다."
         }
       },
       "required": [
@@ -211,13 +216,22 @@
       ],
       "title": "InclusionDependency",
       "type": "object"
+    },
+    "VerificationScope": {
+      "description": "FD 검증 범위. 전수 GROUP BY로 확정한 것만 full이다(실패 닫힘).",
+      "enum": [
+        "full",
+        "sample"
+      ],
+      "title": "VerificationScope",
+      "type": "string"
     }
   },
   "additionalProperties": false,
-  "description": "S5 산출물: 관계 분석 결과 그래프.\n\n후보 키, 근사 함수 종속, 포함 종속, 상관, 파생, 계층을 담는다. FD 탐색은 좌변\n크기 제한과 샘플 탐색 후 전수 검증으로 조합 폭발을 제어한다.",
+  "description": "S5 산출물: 관계 분석 결과 그래프.\n\n후보 키, 근사 함수 종속, 포함 종속, 상관, 파생, 계층을 담는다. FD 탐색은 좌변\n크기 제한과 샘플 탐색 후 전수 검증으로 조합 폭발을 제어한다.\n\nnotes는 운영 기록이다 — 작업량 예산 초과 사유, 범위 밖 항목(상호정보량·\n파생·계층), 탐색에서 뺀 컬럼(상수 등). 컬럼 이름·집계 숫자만 담고 셀\n값은 넣지 않는다(P1 공통 규칙).",
   "properties": {
     "contract_version": {
-      "default": "0.1.0",
+      "default": "0.2.0",
       "title": "Contract Version",
       "type": "string"
     },
@@ -261,6 +275,13 @@
         "$ref": "#/$defs/Hierarchy"
       },
       "title": "Hierarchies",
+      "type": "array"
+    },
+    "notes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Notes",
       "type": "array"
     }
   },

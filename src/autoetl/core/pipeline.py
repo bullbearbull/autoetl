@@ -92,7 +92,7 @@ def run_pipeline(
         ctx.stage_artifacts["s03_types"] = types
         stats = s04_stats.run(ctx, ingest)
         ctx.stage_artifacts["s04_stats"] = stats
-        relations = s05_relations.run(ctx)
+        relations = s05_relations.run(ctx, ingest, types, profiles)
         ctx.stage_artifacts["s05_relations"] = relations
         quality = s06_quality.run(ctx)
         ctx.stage_artifacts["s06_quality"] = quality

@@ -74,7 +74,7 @@
   "description": "S2 산출물: 컬럼 하나의 구조 프로파일.\n\n결측률, 고유값 수, 카디널리티 비율, 길이 분포, 형태 마스크 상위 k개를 담는다.\n데이터셋 수준의 중복 행 수는 S6 QualityReport의 유일성 항목에 기록한다.",
   "properties": {
     "contract_version": {
-      "default": "0.1.0",
+      "default": "0.2.0",
       "title": "Contract Version",
       "type": "string"
     },

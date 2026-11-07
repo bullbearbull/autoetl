@@ -70,7 +70,7 @@
   "description": "S10 산출물: 후보 하나의 평가 기준표 점수.\n\n항목별 0~100점을 매기고 용도(Purpose)별 가중합을 계산한다. 같은 데이터라도\n용도가 다르면 정답 스키마가 달라지기 때문이다.",
   "properties": {
     "contract_version": {
-      "default": "0.1.0",
+      "default": "0.2.0",
       "title": "Contract Version",
       "type": "string"
     },

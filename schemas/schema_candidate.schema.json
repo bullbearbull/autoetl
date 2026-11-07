@@ -172,7 +172,7 @@
   "description": "S9 산출물: 후보 스키마 하나. 코드가 만들고 LLM은 허용 연산으로만 보정한다.",
   "properties": {
     "contract_version": {
-      "default": "0.1.0",
+      "default": "0.2.0",
       "title": "Contract Version",
       "type": "string"
     },

@@ -60,7 +60,7 @@
   "description": "S12 산출물: 사용자가 고른 후보와 수정. 수정 후 재검증을 거친다.",
   "properties": {
     "contract_version": {
-      "default": "0.1.0",
+      "default": "0.2.0",
       "title": "Contract Version",
       "type": "string"
     },

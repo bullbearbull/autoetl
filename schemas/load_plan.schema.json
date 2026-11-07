@@ -152,7 +152,7 @@
   "description": "S13 산출물: 적재 플랜(코드 + LLM).\n\n매핑, 변환 규칙, 적재 순서, 증분 전략, 오류 행 격리를 정의한다. 내보내기는\nddl.sql, load_plan.yaml, 단독 실행 ETL 스크립트로 한다(P4).",
   "properties": {
     "contract_version": {
-      "default": "0.1.0",
+      "default": "0.2.0",
       "title": "Contract Version",
       "type": "string"
     },
