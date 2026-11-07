@@ -1,8 +1,10 @@
-"""벤치 정답 파일 형식 v0.3 (answer.json).
+"""벤치 정답 파일 형식 v0.4 (answer.json).
 
 T-0008 생성기가 내보내던 잠정 형식을 정식화하고, T-0015에서 채점 키를 헤더
 문자열에서 컬럼 ID로 바꿨다. T-0020에서 정수 대리 키(kind id·fk)의 정답 물리
-타입을 integer로 바로잡았다. 정답은 원본 관계형 스키마 그 자체다: 테이블,
+타입을 integer로 바로잡았다. T-0037에서 변형별 컬럼 순서(hard 셔플)를
+담도록 variant_columns를 추가했다 — 정답 테이블의 컬럼 순서와 변형 CSV의
+컬럼 순서가 달라도 채점된다. 정답은 원본 관계형 스키마 그 자체다: 테이블,
 컬럼의 물리 타입, 기본 키, 외래 키, 함수 종속, 컬럼→테이블 배정. 예측(채점
 대상)은 같은 구조를 쓰되 컬럼 이름은 채점 대상 변형 CSV의 헤더 문자열이다.
 """
@@ -13,7 +15,7 @@ from pydantic import Field
 
 from autoetl.contracts.common import ContractModel, PhysicalType
 
-ANSWER_VERSION = "0.3.0"
+ANSWER_VERSION = "0.4.0"
 
 PHYSICAL_TYPE_OF_KIND: dict[str, PhysicalType] = {
     "id": PhysicalType.INTEGER,
@@ -76,8 +78,13 @@ class BenchAnswer(ContractModel):
     pack: str
     tables: list[AnswerTable] = Field(min_length=1)
     variant_headers: dict[str, list[str]] = Field(
-        description="변형 이름 → 그 변형 CSV의 필드 헤더 행(컬럼 순서는 정답과 동일). "
-        "채점이 예측 컬럼 이름을 컬럼 ID로 바꾸는 위치 대응에 쓴다",
+        description="변형 이름 → 그 변형 CSV의 필드 헤더 행. 채점 대상 예측의 컬럼 "
+        "이름이 여기에 나온다",
+    )
+    variant_columns: dict[str, list[str]] = Field(
+        description="변형 이름 → 그 변형 CSV 컬럼 순서의 컬럼 ID 목록(변형별 대응표). "
+        "variant_headers와 위치가 짝이다 — 채점은 이 대응으로 예측 컬럼 이름을 "
+        "컬럼 ID로 바꾼다(변형마다 컬럼 순서가 달라도 된다, T-0037)",
     )
 
 

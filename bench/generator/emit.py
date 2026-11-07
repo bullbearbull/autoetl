@@ -230,12 +230,14 @@ def answer_schema(
     tables: dict[str, list[dict[str, str]]],
     *,
     variant_headers: dict[str, list[str]],
+    variant_columns: dict[str, list[str]],
 ) -> BenchAnswer:
     """정답 스키마. 형식 정의는 bench/answer.py(BenchAnswer)를 따른다.
 
     FK 컬럼의 column_id는 참조 대상 부모 PK의 컬럼 ID다(자식 FK와 부모 PK는
-    같은 평면 컬럼을 가리킨다). variant_headers는 변형별 필드 헤더 행으로,
-    채점이 예측 컬럼 이름을 컬럼 ID로 바꾸는 위치 대응에 쓴다.
+    같은 평면 컬럼을 가리킨다). variant_headers(변형별 필드 헤더 행)와
+    variant_columns(그 변형 CSV 컬럼 순서의 컬럼 ID)이 위치가 짝을 이룬다 —
+    채점의 이름 → 컬럼 ID 대응표다(T-0037, hard는 컬럼 순서를 섞는다).
     """
     answer_tables: list[AnswerTable] = []
     for table in pack.tables:
@@ -281,6 +283,7 @@ def answer_schema(
         pack=pack.name,
         tables=answer_tables,
         variant_headers=variant_headers,
+        variant_columns=variant_columns,
     )
 
 

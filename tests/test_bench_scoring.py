@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -100,20 +99,22 @@ def demo_answer() -> BenchAnswer:
             "clean": ["a_id", "a_name", "a_amt", "b_id"],
             "hard": ["col_01", "col_02", "col_03", "col_04"],
         },
+        variant_columns={
+            "clean": ["a_id", "a_name", "a_amt", "b_id"],
+            # hard는 컬럼 순서가 정답 순서와 다르다(T-0037 셔플) — 위치 대응이
+            # 아니라 변형별 대응표로 채점된다.
+            "hard": ["a_amt", "b_id", "a_id", "a_name"],
+        },
     )
 
 
 def perfect_prediction(answer: BenchAnswer, variant: str = "clean") -> BenchPrediction:
     """정답을 그대로 옮긴 예측. 컬럼 이름은 그 변형의 헤더 문자열이다."""
-    header = answer.variant_headers[variant]
-    column_ids: list[str] = []
-    seen: set[str] = set()
-    for table in answer.tables:
-        for column in table.columns:
-            if column.column_id not in seen:
-                seen.add(column.column_id)
-                column_ids.append(column.column_id)
-    name_of = dict(zip(column_ids, header, strict=True))
+    # 변형별 대응표: 헤더 이름 ↔ 컬럼 ID(위치 짝). 변형 순서가 정답 순서와
+    # 달라도(variant_columns) 이름으로 대응한다.
+    name_of = dict(
+        zip(answer.variant_columns[variant], answer.variant_headers[variant], strict=True)
+    )
     info: dict[str, tuple[PhysicalType, bool]] = {}
     for table in answer.tables:
         for column in table.columns:
@@ -226,7 +227,7 @@ def test_one_wrong_type_drops_type_f1() -> None:
 def test_unknown_variant_or_length_mismatch_raises() -> None:
     answer = demo_answer()
     prediction = perfect_prediction(answer)
-    with pytest.raises(ValueError, match="헤더가 없다"):
+    with pytest.raises(ValueError, match="대응표가 없다"):
         type_f1(answer, prediction, "format_mix")
     broken = answer.model_copy(deep=True)
     broken.variant_headers["clean"] = broken.variant_headers["clean"][:3]
@@ -360,6 +361,7 @@ def test_empty_truth_fds_penalize_spam() -> None:
             )
         ],
         variant_headers={"clean": ["id"]},
+        variant_columns={"clean": ["id"]},
     )
 
     def solo_prediction(
@@ -444,7 +446,7 @@ def test_answer_format_is_closed() -> None:
 
 
 def test_answer_version_bumped() -> None:
-    assert ANSWER_VERSION == "0.3.0"
+    assert ANSWER_VERSION == "0.4.0"
 
 
 # ── 기준선(README 문서↔코드 일치) ──────────────────────────────────────────
@@ -525,60 +527,86 @@ def test_readme_baseline_table_matches_computed(
             assert f"{score:.2f}" == cell, f"{pack_name}/{variant} {label} 기준선 불일치"
 
 
-def test_hard_header_only_attacks_stay_below_clean_name_signal(
+def test_hard_header_only_attacks_stay_near_wide_baseline(
     dataset_answers: dict[str, BenchAnswer],
     hard_header_rows: dict[str, list[list[str]]],
 ) -> None:
-    """그룹 행·필드 행만 읽는 위치 끊기 공격이 clean 이름 신호보다 낮아야 한다.
+    """헤더 전용 공격 3종이 hard 단일 와이드 기준선 + 5점 이하여야 한다(T-0037).
 
-    소유자 재리뷰 재현('식별자' 위치 끊기 53.68점)의 재발 방지. 키 컬럼 라벨을
-    '수치'로 통합한 뒤에도 '수치' 위치 끊기가 와이드 기준선을 넘는 잔여 신호가
-    있어(orders_kr 47.87점) 현행 판정 기준은 clean 위치 끊기 미만으로 둔다.
+    리드 기준: (1) 라벨런 끊기 — 라벨이 바뀌는 지점마다 테이블을 끊는다.
+    (2) 라벨 타입 힌트 — 라벨이 타입을 알려 준다는 최악의 가정(오라클): 같은
+    라벨 컬럼 전부에 그 칸의 다수 정답 타입을 입힌다. 구분N 블록 라벨은 정보가
+    없어 실제 공격자는 여기까지 못 하지만, 실패 닫힘으로 상한을 잰다.
+    (3) 라벨 없이 k컬럼씩 끊기(k=2~6) — 셔플 전 정답이었던 '테이블별 이어진
+    컬럼 순서'가 없어졌는지 확인한다. 배경 재현: 섞기 전에는 라벨 끊기 +
+    라벨 타입으로 orders_kr 54.19점·music 47.64점이 나왔다.
     """
     for pack_name, answer in dataset_answers.items():
         group_row, field_row = hard_header_rows[pack_name]
-        clean_signal = schema_recovery_score(
-            answer, position_break_baseline(answer, "clean"), "clean"
-        )
         wide = schema_recovery_score(answer, wide_table_baseline(answer, "hard"), "hard")
+        limit = wide + 5.0
 
-        def from_segments(segments: list[list[str]]) -> BenchPrediction:
+        def from_segments(
+            segments: list[list[str]], types: list[PhysicalType] | None = None
+        ) -> BenchPrediction:
             return BenchPrediction(
                 tables=[
                     PredictedTable(
                         columns=[
-                            PredictedColumn(name=name, physical_type=PhysicalType.STRING)
+                            PredictedColumn(
+                                name=name,
+                                physical_type=types[i] if types else PhysicalType.STRING,
+                            )
                             for name in segment
                         ],
                         primary_key=[segment[0]],
                     )
-                    for segment in segments
+                    for i, segment in enumerate(segments)
                     if segment
                 ]
             )
 
-        attacks: dict[str, list[list[str]]] = {}
-        # 공격 1: 라벨이 바뀌는 지점마다 끊는다(라벨런 세그먼트).
+        # 공격 1: 라벨런 세그먼트(블록 라벨이므로 블록 크기와 같아진다).
         segments: list[list[str]] = [[field_row[0]]]
         for i in range(1, len(group_row)):
             if group_row[i] != group_row[i - 1]:
                 segments.append([])
             segments[-1].append(field_row[i])
-        attacks["라벨런"] = segments
-        # 공격 2: 라벨 값 하나를 골라 그 위치 앞에서마다 끊는다(구 '식별자' 공격의 일반화).
-        for label in sorted(set(group_row)):
-            starts = [i for i, value in enumerate(group_row) if value == label]
-            bounds = sorted({0, *starts, len(field_row)})
-            attacks[f"라벨 {label}"] = [
-                field_row[start:end] for start, end in pairwise(bounds) if end > start
-            ]
-        for name, segments in attacks.items():
-            score = schema_recovery_score(answer, from_segments(segments), "hard")
-            assert score < clean_signal, (
-                f"{pack_name} hard 헤더 전용 공격({name})이 clean 이름 신호"
-                f"({clean_signal:.2f})를 넘었다: {score:.2f}"
+        segments = [segment for segment in segments if segment]
+        attacks: dict[str, tuple[list[list[str]], list[PhysicalType] | None]] = {
+            "라벨런 끊기": (segments, None)
+        }
+        # 공격 2: 라벨 타입 힌트(오라클) — 같은 라벨 칸의 다수 정답 타입.
+        id_map = dict(
+            zip(answer.variant_headers["hard"], answer.variant_columns["hard"], strict=True)
+        )
+        truth_types: dict[str, PhysicalType] = {}
+        for table in answer.tables:
+            for column in table.columns:
+                truth_types.setdefault(column.column_id, column.physical_type)
+        oracle: list[PhysicalType] = []
+        for segment in segments:
+            counts: dict[PhysicalType, int] = {}
+            for name in segment:
+                kind = truth_types[id_map[name]]
+                counts[kind] = counts.get(kind, 0) + 1
+            oracle.append(max(counts, key=lambda kind: (counts[kind], kind.value)))
+        attacks["라벨 타입 힌트(오라클)"] = (segments, oracle)
+        # 공격 3: 라벨 없이 k컬럼씩 끊기(k = 2~6).
+        for k in range(2, 7):
+            chunks = [field_row[i : i + k] for i in range(0, len(field_row), k)]
+            attacks[f"{k}컬럼씩 끊기"] = (chunks, None)
+
+        best_name, best = "없음", -1.0
+        for name, (attack_segments, types) in sorted(attacks.items()):
+            score = schema_recovery_score(answer, from_segments(attack_segments, types), "hard")
+            if score > best:
+                best_name, best = name, score
+            assert score <= limit, (
+                f"{pack_name} hard 헤더 전용 공격({name})이 단일 와이드 기준선"
+                f"({wide:.2f}) + 5점({limit:.2f})을 넘었다: {score:.2f}"
             )
-        assert wide < clean_signal
+        assert best_name != "없음"
 
 
 # ── 관문·판정 ────────────────────────────────────────────────────────────────

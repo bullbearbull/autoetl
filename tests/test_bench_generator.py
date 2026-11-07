@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import csv
+from datetime import date
 from pathlib import Path
 
 import pytest
 from bench.answer import ANSWER_VERSION, BenchAnswer
-from bench.generator import PACKS, build_dataset, flat_layout, flatten, generate_pack
-from bench.generator.noise import GROUP_LABELS, NULL_TOKENS, VARIANTS, apply_noise
+from bench.generator import PACKS, build_dataset, column_order, flat_layout, flatten, generate_pack
+from bench.generator.noise import (
+    GROUP_LABELS,
+    HARD_GROUP_BLOCK,
+    NULL_TOKENS,
+    VARIANTS,
+    apply_noise,
+)
 from bench.generator.packs import ColumnSpec, FlatColumn, Pack, TableSpec
 
 from autoetl.contracts.common import PhysicalType
@@ -248,7 +255,7 @@ def test_multi_header_group_row_hides_table_assignment() -> None:
     assert set(group_row) <= set(GROUP_LABELS.values()), "그룹 라벨은 컬럼 성격만 쓴다"
 
 
-def test_hard_variant_uses_nameless_field_row() -> None:
+def test_hard_variant_uses_nameless_field_row_and_block_labels() -> None:
     pack = PACKS["music"]
     header, rows = flatten(pack, generate_pack(pack, seed=1))
     layout = flat_layout(pack)
@@ -258,6 +265,82 @@ def test_hard_variant_uses_nameless_field_row() -> None:
     assert all(cell.startswith("col_") for cell in field_row), "hard 필드 행은 col_01 형식"
     assert field_row == [f"col_{i:02d}" for i in range(1, len(header) + 1)]
     assert len(group_row) == len(header)
+    # 그룹 행은 위치 기반 고정 블록 라벨이다(T-0037) — 컬럼 성격·테이블 경계와
+    # 무관하므로 라벨만으로 타입·배정을 알 수 없다.
+    assert group_row == [f"구분{i // HARD_GROUP_BLOCK + 1}" for i in range(len(header))]
+    kinds = [column.kind for column in layout]
+    order = column_order("hard", len(header), seed=1)
+    shuffled_kinds = [kinds[i] for i in order]
+    block_kinds = {label: set() for label in dict.fromkeys(group_row)}
+    for i, kind in enumerate(shuffled_kinds):
+        block_kinds[group_row[i]].add(kind)
+    assert len(block_kinds) >= 2
+    assert any(len(block) > 1 for block in block_kinds.values()), (
+        "블록 안 컬럼 성격이 섞여 있어야 한다(라벨이 성격을 알려 주지 않는다)"
+    )
+
+
+def test_hard_column_order_is_shuffled_deterministically() -> None:
+    pack = PACKS["orders_kr"]
+    header, rows = flatten(pack, generate_pack(pack, seed=42))
+    layout = flat_layout(pack)
+    first, _ = apply_noise("hard", header, rows, seed=42, columns=layout)
+    second, _ = apply_noise("hard", header, rows, seed=42, columns=layout)
+    assert first == second, "같은 시드는 같은 열 순서를 낸다"
+    # 열 단위로 확인: 각 열의 값 집합은 원본 컬럼 값 집합과 같다(순서만 바뀐다).
+    assert [row[:] for row in rows] != first[2:], "hard는 컬럼을 섞는다(시드 42)"
+    clean, _ = apply_noise("clean", header, rows, seed=42, columns=layout)
+    assert [row[:] for row in rows] == clean[1:], "다른 변형은 순서를 유지한다"
+    order = column_order("hard", len(header), seed=42)
+    assert sorted(order) == list(range(len(header)))
+    assert order != list(range(len(header)))
+    assert column_order("clean", len(header), seed=42) == list(range(len(header)))
+
+
+def _noise_forms(kind: str, value: str) -> set[str]:
+    """잡음 변형이 만들 수 있는 값 형태(결측 토큰 제외)."""
+    if kind == "date":
+        parsed = date.fromisoformat(value)
+        return {
+            value.replace("-", "/"),
+            value.replace("-", ""),
+            str((parsed - date(1899, 12, 30)).days),
+        }
+    if kind == "amount":
+        return {f"{int(value):,}", f"{int(value):,}원"}
+    if kind == "code":
+        return {value.lstrip("0") or "0"}
+    return set()
+
+
+@pytest.mark.parametrize("pack_name", sorted(PACKS))
+def test_hard_columns_match_clean_by_column_id(pack_name: str, tmp_path: Path) -> None:
+    """hard의 각 컬럼은 같은 컬럼 ID의 clean 컬럼과 같은 데이터다(잡음 셀 제외).
+
+    변형 사이 대조는 위치가 아니라 컬럼 ID로 한다(T-0037) — hard는 열 순서가
+    시드 고정 셔플이라 위치가 다르다.
+    """
+    out = _dataset(pack_name, tmp_path)
+    answer = BenchAnswer.model_validate_json((out / "answer.json").read_text(encoding="utf-8"))
+    clean_rows = _read_csv(out / "clean.csv")
+    hard_rows = _read_csv(out / "hard.csv", encoding="cp949")
+    clean_index = {name: i for i, name in enumerate(clean_rows[0])}
+    layout = {column.column_id: column for column in flat_layout(PACKS[pack_name])}
+    tokens = set(NULL_TOKENS)
+    for position, column_id in enumerate(answer.variant_columns["hard"]):
+        column = layout[column_id]
+        origin = clean_index[column_id]
+        for hard_row, clean_row in zip(hard_rows[2:], clean_rows[1:], strict=True):
+            value, original = hard_row[position], clean_row[origin]
+            if value == original:
+                continue
+            if column.is_key:
+                raise AssertionError(
+                    f"키 컬럼 {column_id}은(는) 잡음이 없어 값이 정확히 같아야 한다"
+                )
+            assert value in tokens or value in _noise_forms(column.kind, original), (
+                f"{column_id}: {value!r}은(는) {original!r}의 잡음 형태가 아니다"
+            )
 
 
 def test_cp949_variant_round_trips(tmp_path: Path) -> None:
@@ -308,10 +391,31 @@ def test_no_variant_header_leaks_table_names(pack_name: str, tmp_path: Path) -> 
         )
 
 
+@pytest.mark.parametrize("pack_name", sorted(PACKS))
+def test_variant_columns_mapping_table(pack_name: str, tmp_path: Path) -> None:
+    """변형별 대응표(T-0037): 이름 없는 hard는 컬럼 순서가 정답과 다르다.
+
+    셔플하지 않는 변형은 variant_columns가 정답 순서(= 컬럼 ID 헤더) 그대로다.
+    """
+    out = _dataset(pack_name, tmp_path)
+    answer = BenchAnswer.model_validate_json((out / "answer.json").read_text(encoding="utf-8"))
+    ids = [column.column_id for column in flat_layout(PACKS[pack_name])]
+    for variant in VARIANTS:
+        assert sorted(answer.variant_columns[variant]) == sorted(ids), variant
+        assert len(answer.variant_columns[variant]) == len(answer.variant_headers[variant])
+    for variant in VARIANTS:
+        if variant == "hard":
+            assert answer.variant_columns["hard"] != ids, "hard는 컬럼을 섞는다(시드 42)"
+        else:
+            assert answer.variant_columns[variant] == ids, f"{variant}은 순서를 유지한다"
+            # 이름 있는 변형은 헤더 이름 자체가 컬럼 ID다(hard만 col_NN).
+            assert answer.variant_headers[variant] == answer.variant_columns[variant]
+
+
 def test_answer_maps_fk_to_parent_pk_column_id(tmp_path: Path) -> None:
     out = _dataset("orders_kr", tmp_path)
     answer = BenchAnswer.model_validate_json((out / "answer.json").read_text(encoding="utf-8"))
-    assert answer.answer_version == ANSWER_VERSION == "0.3.0"
+    assert answer.answer_version == ANSWER_VERSION == "0.4.0"
     orders = next(table for table in answer.tables if table.name == "orders")
     fk_column = next(column for column in orders.columns if column.is_foreign_key)
     assert fk_column.column_id == "customer_id", "FK의 컬럼 ID는 부모 PK의 컬럼 ID다"

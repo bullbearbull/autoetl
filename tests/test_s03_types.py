@@ -81,10 +81,11 @@ def test_trap_columns_typed_correctly(
     datasets: dict[str, Path], pack_name: str, variant: str
 ) -> None:
     # 완료 기준: 날짜 컬럼은 date, 금액 컬럼은 decimal, 앞자리 0 코드는 string.
-    # 컬럼 위치는 변형이 달라도 같다 — clean 헤더로 위치를 잡는다(hard는 col_NN).
+    # 컬럼 위치는 변형별 대응표(variant_columns)로 잡는다 — hard는 col_NN 이름에
+    # 컬럼 순서까지 섞여 있다(T-0037).
     out = datasets[pack_name]
     answer = BenchAnswer.model_validate_json((out / "answer.json").read_text(encoding="utf-8"))
-    clean_headers = answer.variant_headers["clean"]
+    variant_ids = answer.variant_columns[variant]
     variant_headers = answer.variant_headers[variant]
     truth: dict[str, PhysicalType] = {}
     for table in answer.tables:
@@ -93,9 +94,9 @@ def test_trap_columns_typed_correctly(
 
     ingest, types = _types_of(out / f"{variant}.csv")
     for column_id in COLUMN_IDS:
-        if column_id not in clean_headers or column_id not in truth:
+        if column_id not in variant_ids or column_id not in truth:
             continue
-        position = clean_headers.index(column_id)
+        position = variant_ids.index(column_id)
         assignment = types[position]
         assert ingest.columns[position].name == variant_headers[position]
         assert assignment.physical_type is truth[column_id], (pack_name, variant, column_id)
@@ -160,22 +161,26 @@ def test_normalized_view_matches_clean(
 ) -> None:
     # 변이의 값 있는 셀만 비교해 clean 정규화 값과의 일치율이 99% 이상이다.
     # 결측 표기 셀은 정규화 규칙대로 NULL이므로 비교에서 제외한다(원복 불가).
+    # 컬럼 대조는 컬럼 ID 기준이다(T-0037) — hard는 컬럼 순서가 다르다.
     out = datasets[pack_name]
+    answer = BenchAnswer.model_validate_json((out / "answer.json").read_text(encoding="utf-8"))
+    clean_ids = answer.variant_columns["clean"]
+    variant_ids = answer.variant_columns[variant]
     clean_norm, _ = _normalized_and_raw(out / "clean.csv")
     variant_norm, variant_raw = _normalized_and_raw(out / f"{variant}.csv")
     assert len(clean_norm) == len(variant_norm)
 
-    width = len(clean_norm[0])
-    for index in range(width):
+    for clean_index, column_id in enumerate(clean_ids):
+        variant_index = variant_ids.index(column_id)
         compared = equal = 0
         for clean_row, norm_row, raw_row in zip(clean_norm, variant_norm, variant_raw, strict=True):
-            if _is_missing_raw(raw_row[index]):
+            if _is_missing_raw(raw_row[variant_index]):
                 continue
             compared += 1
-            if norm_row[index] == clean_row[index]:
+            if norm_row[variant_index] == clean_row[clean_index]:
                 equal += 1
         assert compared > 0
-        assert equal / compared >= 0.99, (pack_name, variant, index)
+        assert equal / compared >= 0.99, (pack_name, variant, column_id)
 
 
 # ── 판정 규칙·메타데이터 ────────────────────────────────────────────────────

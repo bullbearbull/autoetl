@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from bench.answer import BenchAnswer
-from bench.generator import PACKS, build_dataset, flat_layout
+from bench.generator import PACKS, build_dataset
 from bench.generator.noise import VARIANTS
 from bench.runner import (
     METRICS,
@@ -46,12 +46,13 @@ def answers(tmp_path_factory: pytest.TempPathFactory) -> dict[str, tuple[BenchAn
 def _candidate_from_answer(answer: BenchAnswer, variant: str) -> SchemaCandidate:
     """정답을 SchemaCandidate로 옮긴 입력(완료 기준의 변환기 정확성 재료).
 
-    source_columns는 그 변형의 필드 헤더 문자열(variant_headers)이고, 위치는
-    평면 배치(flat_layout)의 컬럼 ID 위치에서 찾는다.
+    source_columns는 그 변형의 필드 헤더 문자열(variant_headers)이고, 변형별
+    대응표(variant_columns와 위치 짝)로 컬럼 ID → 이름을 찾는다(T-0037 —
+    hard는 컬럼 순서가 정답과 다르다).
     """
-    layout = flat_layout(PACKS[answer.pack])
-    position = {column.column_id: i for i, column in enumerate(layout)}
-    headers = answer.variant_headers[variant]
+    name_of = dict(
+        zip(answer.variant_columns[variant], answer.variant_headers[variant], strict=True)
+    )
     tables: list[TargetTable] = []
     for table in answer.tables:
         foreign_key_of = {
@@ -63,7 +64,7 @@ def _candidate_from_answer(answer: BenchAnswer, variant: str) -> SchemaCandidate
             TargetColumn(
                 name=column.name,
                 physical_type=column.physical_type,
-                source_columns=[headers[position[column.column_id]]],
+                source_columns=[name_of[column.column_id]],
                 nullable=True,
                 is_primary_key=column.name in table.primary_key,
                 foreign_key=foreign_key_of.get(column.name),
