@@ -14,11 +14,13 @@
   좌변은 그룹이 대부분 한 행이라 구조상 근사 FD가 된다. support는 'lhs 값 중
   rhs가 유일한 비율'(그룹 기준, 계약 설명), violation_count는 위반 lhs 값의
   행 수다. 채택한 FD는 전수 GROUP BY로 확정했으므로 verification=full이다.
-- 제거 규칙(리드 검토 #168): 진부분집합 좌변이 같은 우변을 정확히 결정하면
-  제거(최소 좌변). 키 좌변 FD는 대표 키(크기 → S3 타입 랭크 identifier·
-  integer > code > 그 밖 → 컬럼 순서) 하나에서만 낸다. 동치 컬럼(서로 정확히
-  결정하는 단일 컬럼)도 같은 대표 규칙으로 대표만 결정자다. 이행 제거는 대표들
-  사이에 일반 적용(a→b·b→c가 정확하고 b·c가 동치가 아니면 a→c 제거).
+- 제거 규칙(리드 검토 #168·#174): 정규 피복을 동치 클래스 대표 위에서 만든다.
+  대표는 S3 타입 랭크(identifier·integer > code > 그 밖) → 컬럼 순서. 단일
+  좌변 출력은 '대표 사이 FD(동치 경유 예외 없는 이행 축소) + 클래스마다
+  대표↔멤버 상호 FD'다. 복합 좌변·우변은 대표 컬럼만으로 조합하고(비대표는
+  '대표→멤버'가 도달한다), 다른 우변을 거쳐 도출되는 FD(X→t·t→c가 정확하면
+  X→c)와 단일 대표와 동치인 복합(X→r ∧ r이 X의 각 컬럼 결정)은 지운다. 키
+  좌변 FD는 대표 키 하나에서만 낸다. 근시 FD도 같은 규칙을 지난다.
 - 포함 종속: 단일 파일 입력에서는 빈 목록이다(다중 파일 입력 때).
 - 상관: 수치 쌍은 Pearson·Spearman(동률은 평균 순위 — 파티션 ROW_NUMBER
   평균, 12자리 반올림로 병렬 집계 흔들림 차단), 범주 쌍은 Cramér's V.
@@ -264,29 +266,35 @@ def _equivalence_classes(fds: list[FunctionalDependency]) -> dict[str, str]:
     return {name: find(name) for name in parent}
 
 
-def _drop_transitive(
-    fds: list[FunctionalDependency], equivalent: dict[str, str]
+def _reduce_cover(
+    fds: list[FunctionalDependency], representative_of: dict[str, str]
 ) -> list[FunctionalDependency]:
-    """이행(a→b·b→c가 정확하고 b·c가 동치가 아니면 a→c 제거)을 일반 적용한다.
+    """대표 그래프 정규 피복 축소(리드 #174 e·f).
 
-    동치 쌍을 경유하면 a→c는 다른 정보라 지우지 않는다(FK 직접 종속 보존).
-    근사 경로는 도출 보장이 없어 자격이 없다.
+    e: X→t와 t→c가 모두 정확(위반 0)하면 X→c는 다른 우변을 거쳐 도출된다 —
+    지운다. 우변이 비대표 동치 멤버인 FD는 '대표→멤버' 산출뿐이라 대상에서
+    뺀다(클래스 안 쌍을 경유로 삼으면 대표→멤버가 전부 지워진다).
+    f: 복합 X→r이 정확하고 단일 r이 X의 각 컬럼을 결정하면 X는 r과 동치다 —
+    엔터티 키 r이 그 사실을 말하므로 X는 FD를 내지 않는다.
+    근시 경로는 도출 보장이 없어 재료가 되지 못한다.
     """
-    exact = {(fd.lhs[0], fd.rhs) for fd in fds if len(fd.lhs) == 1 and fd.violation_count == 0}
-    middles = {a for a, _ in exact}
+    exact_keys = {(tuple(fd.lhs), fd.rhs) for fd in fds if fd.violation_count == 0}
+    single_exact = {(lhs[0], rhs) for lhs, rhs in exact_keys if len(lhs) == 1}
+    middles = {a for a, _ in single_exact}
+    equivalent_compounds: set[tuple[str, ...]] = set()
+    for lhs, rhs in exact_keys:
+        if len(lhs) > 1 and all((rhs, member) in single_exact for member in lhs):
+            equivalent_compounds.add(lhs)
     kept: list[FunctionalDependency] = []
     for fd in fds:
-        if len(fd.lhs) == 1:
-            a, c = fd.lhs[0], fd.rhs
-            if any(
-                b != a
-                and b != c
-                and (a, b) in exact
-                and (b, c) in exact
-                and equivalent.get(b, b) != equivalent.get(c, c)
-                for b in middles
-            ):
-                continue
+        lhs, rhs = tuple(fd.lhs), fd.rhs
+        if lhs in equivalent_compounds:
+            continue
+        if representative_of.get(rhs, rhs) == rhs and any(
+            middle != rhs and (lhs, middle) in exact_keys and (middle, rhs) in single_exact
+            for middle in middles
+        ):
+            continue
         kept.append(fd)
     return kept
 
@@ -492,7 +500,7 @@ def run(
         )
         _adopt((name,), avg_group, measures, targets)
 
-    # 동치 클래스(서로 정확히 결정하는 단일 컬럼)와 비대표 lhs 규칙.
+    # 동치 클래스(서로 정확히 결정하는 단일 컬럼)와 대표(리드 #174 b).
     equivalent = _equivalence_classes(fds)
     representatives = {
         root: min(
@@ -502,15 +510,31 @@ def run(
         for root in set(equivalent.values())
     }
     representative_of = {name: representatives[root] for name, root in equivalent.items()}
+
+    def _is_representative(name: str) -> bool:
+        return representative_of.get(name, name) == name
+
+    # 단일 좌변 출력(리드 #174 c): (1) 동치 클래스 안의 정확 상호 FD 전부
+    # (대표→멤버·멤버→대표 — 대체 키 정보), (2) 대표 사이 FD(정확·근시 —
+    # 비대표 lhs·우변은 여기서 빠진다: 비대표는 (1)로 도달한다).
     fds = [
         fd
         for fd in fds
-        if len(fd.lhs) != 1
-        or representative_of.get(fd.lhs[0], fd.lhs[0]) == fd.lhs[0]  # 대표만 결정자
-        or fd.rhs == representative_of[fd.lhs[0]]  # 비대표는 대표와의 상호 FD만
+        if len(fd.lhs) == 1
+        and (
+            (
+                fd.violation_count == 0
+                and fd.lhs[0] in equivalent
+                and equivalent.get(fd.rhs) == equivalent[fd.lhs[0]]
+            )
+            or (_is_representative(fd.lhs[0]) and _is_representative(fd.rhs))
+        )
     ]
 
-    if lhs_budget_hit is None:  # 패스 2: 복합 좌변
+    if lhs_budget_hit is None:  # 패스 2: 복합 좌변(리드 #174 d)
+        # 좌변·우변 모두 대표 컬럼만 — 비대표는 단일 출력의 '대표→멤버'가 말한다.
+        compound_pool = [name for name in compound_pool if _is_representative(name)]
+        representative_rhs = [rhs for rhs in rhs_pool if _is_representative(rhs)]
         for size in range(2, max_lhs + 1):
             for lhs in combinations(compound_pool, size):
                 lhs_set = frozenset(lhs)
@@ -530,7 +554,7 @@ def run(
                     lhs_cardinality *= cardinality[name]
                 targets = [
                     rhs
-                    for rhs in rhs_pool
+                    for rhs in representative_rhs
                     if rhs not in lhs_set
                     and cardinality[rhs] <= lhs_cardinality + allowed_violation_rows
                     and (lhs[0], rhs) not in exact_single
@@ -551,7 +575,8 @@ def run(
             f"좌변 후보 예산({lhs_budget}) 초과 — 크기 {lhs_budget_hit - 1}까지 검증, "
             f"남은 후보 약 {remaining}개"
         )
-    fds = _drop_transitive(_minimal_lhs(fds), equivalent)
+    # 정규 피복 축소(리드 #174 e·f) — 근시 FD도 같은 규칙을 지난다.
+    fds = _reduce_cover(_minimal_lhs(fds), representative_of)
     fds.sort(key=lambda fd: (len(fd.lhs), fd.lhs, fd.rhs))
     notes.append("상호정보량·파생 컬럼·계층 구조는 이번 범위 밖이다(빈 목록)")
 

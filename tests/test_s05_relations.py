@@ -73,12 +73,38 @@ def test_truth_fds_all_found(
     assert not missing, f"못 찾은 정답 FD(컬럼 ID): {sorted(missing)}"
 
 
-# ── 리드 검토(#168): FD 정밀도 ────────────────────────────────────────
-# 목표(모든 변형 0.5 이상)는 재검토 대기다 — 정확히 성립하는 우연 복합 좌변의
-# FD(orders_kr clean 잡음 73개 중 63개가 좌변 크기 2)는 평균 그룹 크기 게이트가
-# 근사에만 작동해 남는다. 재현율 1.0은 위 테스트가 지키고, 정밀도 측정값과
-# 원인은 PR 표로 리드 판단을 받는다(리드 안내: 미달 변형은 원인 기재 후
-# 판단 보류).
+# ── 리드 재검토(#174): FD 정밀도(대표 그래프 정규 피복) ──────────────────
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+@pytest.mark.parametrize("pack_name", sorted(PACKS))
+def test_fd_precision_at_least_half(
+    pack_name: str,
+    variant: str,
+    graphs: dict[tuple[str, str], RelationGraph],
+    answers: dict[str, BenchAnswer],
+) -> None:
+    # 리드 목표: 모든 변형 정밀도 0.5 이상(재현율 1.0과 함께 고정).
+    answer = answers[pack_name]
+    truth = _truth_fds(answer)
+    mapped = _fd_set(graphs[(pack_name, variant)], _id_map(answer, variant))
+    hits = len(truth & mapped)
+    assert hits == len(truth)
+    assert hits / len(mapped) >= 0.5, (
+        f"FD 정밀도 {hits / len(mapped):.2f}(정답 {hits} / 예측 {len(mapped)})"
+    )
+
+
+def test_key_lhs_transitive_simplified_on_representative_graph(
+    graphs: dict[tuple[str, str], RelationGraph],
+) -> None:
+    # 리드 #174: 대표 그래프에서 동치 경유 예외가 없어도 FK 직접 종속은 남는다
+    # — oi→product_id는 나오고, product_id↔list_price 동치 경유의 oi→list_price는
+    # 우변 대표 한정으로 나오지 않는다('대표→멤버'가 product_id→list_price로 말한다).
+    graph = graphs[("orders_kr", "clean")]
+    oi_rhs = {fd.rhs for fd in graph.functional_dependencies if fd.lhs == ["order_item_id"]}
+    assert "product_id" in oi_rhs
+    assert "list_price" not in oi_rhs
 
 
 # ── 완료 기준: 리프 테이블 PK가 후보 키로 나온다 ────────────────────────
@@ -193,11 +219,19 @@ def test_pk_lhs_transitive_removed_but_fk_kept(
 
 
 def test_non_key_lhs_transitive_kept(graphs: dict[tuple[str, str], RelationGraph]) -> None:
-    # 키가 아닌 lhs의 이행은 유지한다 — order_id→customer_id(FK 직접 종속,
-    # 정답 FD)는 order_id→email→customer_id 경로가 있어도 지우지 않는다.
+    # 키가 아닌 lhs의 직접 종속은 유지한다 — order_id→customer_id(FK 직접
+    # 종속, 정답 FD)는 e 축소로 지워지지 않는다. 비대표 우변(email)은
+    # '대표→멤버'(customer_id→email)로 도달하니 order_id→email은 내지 않는다.
     graph = graphs[("orders_kr", "clean")]
     order_rhs = {fd.rhs for fd in graph.functional_dependencies if fd.lhs == ["order_id"]}
-    assert {"order_date", "customer_id", "email"} <= order_rhs
+    assert {"order_date", "customer_id"} <= order_rhs
+    assert "email" not in order_rhs
+    pair_rhs = {
+        fd.rhs
+        for fd in graph.functional_dependencies
+        if fd.lhs == ["customer_id"] and fd.rhs == "email"
+    }
+    assert pair_rhs == {"email"}  # 대표→멤버가 대신 말한다
 
 
 def test_unique_single_not_in_compound_lhs(tmp_path: Path) -> None:
