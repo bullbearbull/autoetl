@@ -26,7 +26,7 @@
    uv run pytest
    ```
 
-4. PR을 올린다. 템플릿을 채운다. CI(Windows·Linux × Python 3.10~3.13; macOS는 비용 문제로 보류 중) 전 항목 통과가 병합 조건이다.
+4. PR을 올린다. 템플릿을 채운다. CI(Windows·Linux·macOS × Python 3.10~3.13) 전 항목 통과가 병합 조건이다.
 
 ## 규칙
 
