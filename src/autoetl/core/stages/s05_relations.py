@@ -219,7 +219,10 @@ def _cramers_v(ctx: AnalysisContext, view: str, a: str, b: str) -> float | None:
         for b_value in col_totals
     )
     v = math.sqrt(chi2 / (total * (min(len(row_totals), len(col_totals)) - 1)))
-    return min(v, 1.0)
+    # 교차표 칸의 합산 순서가 GROUP BY 결과 순서를 따라 실행마다 달라질 수
+    # 있어 끝자리(1e-16)가 흔들린다 — Pearson·Spearman(_finite)과 같은 12자리
+    # 반올림으로 같은 입력 같은 그래프를 지킨다(T-0037 hard 셔플로 드러난 결함).
+    return round(min(v, 1.0), 12)
 
 
 def _minimal_lhs(fds: list[FunctionalDependency]) -> list[FunctionalDependency]:

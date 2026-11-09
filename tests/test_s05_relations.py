@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from bench.answer import BenchAnswer
 from bench.generator import PACKS, build_dataset
-from bench.scoring import _column_ids, _id_map, _truth_fds
+from bench.scoring import _id_map, _truth_fds
 
 from autoetl.contracts import CorrelationMethod, RelationGraph
 from autoetl.core.context import AnalysisContext, quote_identifier
@@ -125,8 +125,11 @@ def test_leaf_pk_is_candidate_key(
         for column in leaf_table.columns
         if column.name == leaf_table.primary_key[0]
     )
-    ids = _column_ids(answer)
-    header = answer.variant_headers[variant][ids.index(pk_id)]
+    # 변형별 대응표(T-0037): 컬럼 ID → 그 변형의 헤더 이름(hard는 순서가 다르다)
+    name_of = dict(
+        zip(answer.variant_columns[variant], answer.variant_headers[variant], strict=True)
+    )
+    header = name_of[pk_id]
     graph = graphs[(pack_name, variant)]
     assert any(key.columns == [header] for key in graph.candidate_keys)
 

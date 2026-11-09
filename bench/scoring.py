@@ -4,10 +4,11 @@ docs/PLAN.md 벤치 지표 표의 스키마 복원 영역을 다룬다: 타입 F
 재현율, FD 복원율, 컬럼-테이블 배정 일치도(ARI), 테이블 수 오차. DDL·적재·안정성·
 보안·비용 지표는 실행기(런너)가 실측값을 채운다.
 
-채점 키 규칙(T-0015): 정답 컬럼은 컬럼 ID(테이블 접두사가 없는 이름, 조인 키는
-부모 PK 이름 하나)로 식별한다. 예측의 컬럼 이름은 채점 대상 변형 CSV의 헤더
-문자열이고, 정답의 variant_headers와 위치가 같으므로 헤더 이름 → 컬럼 ID 대응으로
-바꿔 채점한다. 예측 테이블 이름은 채점에 쓰지 않는다. FK 식별은 (자식 테이블 PK의
+채점 키 규칙(T-0015·T-0037): 정답 컬럼은 컬럼 ID(테이블 접두사가 없는 이름, 조인
+키는 부모 PK 이름 하나)로 식별한다. 예측의 컬럼 이름은 채점 대상 변형 CSV의 헤더
+문자열이고, 정답의 변형별 대응표(variant_headers ↔ variant_columns의 위치 짝)로
+컬럼 ID로 바꿔 채점한다 — 변형마다 컬럼 순서가 달라도 된다(hard는 시드 고정
+셔플). 예측 테이블 이름은 채점에 쓰지 않는다. FK 식별은 (자식 테이블 PK의
 컬럼 ID 집합, FK 컬럼 ID 집합) 쌍 — 조인 키가 부모·자식에서 같은 평면 컬럼이라
 예전의 (자식 컬럼, 부모 컬럼) 쌍으로는 구분되지 않기 때문이다.
 """
@@ -20,30 +21,18 @@ from autoetl.contracts.common import PhysicalType
 from bench.answer import BenchAnswer, BenchPrediction
 
 
-def _column_ids(answer: BenchAnswer) -> list[str]:
-    """정답의 평면 컬럼 ID(테이블 선언 순, 조인 키는 첫 등장 한 번)."""
-    ids: list[str] = []
-    seen: set[str] = set()
-    for table in answer.tables:
-        for column in table.columns:
-            if column.column_id not in seen:
-                seen.add(column.column_id)
-                ids.append(column.column_id)
-    return ids
-
-
 def _id_map(answer: BenchAnswer, variant: str) -> dict[str, str]:
-    """변형 헤더 이름 → 컬럼 ID. 변형 헤더와 정답 컬럼은 위치가 같다."""
+    """변형 헤더 이름 → 컬럼 ID(변형별 대응표: 두 목록의 위치 짝)."""
     headers = answer.variant_headers.get(variant)
-    if headers is None:
+    ids = answer.variant_columns.get(variant)
+    if headers is None or ids is None:
         raise ValueError(
-            f"정답에 변형 '{variant}'의 헤더가 없다(variant_headers 키: "
+            f"정답에 변형 '{variant}'의 대응표가 없다(variant_headers 키: "
             f"{sorted(answer.variant_headers)})"
         )
-    ids = _column_ids(answer)
     if len(headers) != len(ids):
         raise ValueError(
-            f"변형 '{variant}' 헤더 길이({len(headers)})가 정답 컬럼 수({len(ids)})와 다르다"
+            f"변형 '{variant}' 대응표 길이 불일치: 헤더 {len(headers)} vs 컬럼 {len(ids)}"
         )
     return dict(zip(headers, ids, strict=True))
 

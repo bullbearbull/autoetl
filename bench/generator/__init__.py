@@ -22,7 +22,7 @@ from bench.generator.emit import (
     write_csv,
     write_json,
 )
-from bench.generator.noise import MULTI_HEADER_VARIANTS, VARIANTS, apply_noise
+from bench.generator.noise import MULTI_HEADER_VARIANTS, VARIANTS, apply_noise, column_order
 from bench.generator.packs import PACKS, FlatColumn, Pack
 
 __all__ = [
@@ -33,6 +33,7 @@ __all__ = [
     "Pack",
     "answer_schema",
     "build_dataset",
+    "column_order",
     "flat_layout",
     "flatten",
     "generate_pack",
@@ -48,6 +49,8 @@ def build_dataset(pack: Pack, seed: int, out_dir: Path) -> dict[str, Any]:
 
     files: list[dict[str, str]] = []
     variant_headers: dict[str, list[str]] = {}
+    variant_columns: dict[str, list[str]] = {}
+    ids = [column.column_id for column in columns]
     for variant in VARIANTS:
         out_rows, encoding = apply_noise(variant, header, rows, seed=seed, columns=columns)
         file_name = f"{variant}.csv"
@@ -56,6 +59,9 @@ def build_dataset(pack: Pack, seed: int, out_dir: Path) -> dict[str, Any]:
         header_depth = 2 if variant in MULTI_HEADER_VARIANTS else 1
         field_row = out_rows[header_depth - 1]
         variant_headers[variant] = list(field_row)
+        # 그 변형 CSV의 컬럼 순서(hard는 시드 고정 셔플)를 컬럼 ID로 담는다.
+        order = column_order(variant, len(ids), seed=seed)
+        variant_columns[variant] = [ids[i] for i in order]
         file_entry: dict[str, Any] = {
             "variant": variant,
             "file": file_name,
@@ -64,7 +70,9 @@ def build_dataset(pack: Pack, seed: int, out_dir: Path) -> dict[str, Any]:
         }
         files.append(file_entry)
 
-    answer = answer_schema(pack, tables, variant_headers=variant_headers)
+    answer = answer_schema(
+        pack, tables, variant_headers=variant_headers, variant_columns=variant_columns
+    )
     write_json(out_dir / "answer.json", answer.model_dump(mode="json"))
     manifest: dict[str, Any] = {
         "generator": "bench.generator v0",
